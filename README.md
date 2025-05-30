@@ -1,13 +1,6 @@
----
-title: Chatterbox TTS
-emoji: 🍿
-colorFrom: indigo
-colorTo: blue
-sdk: gradio
-sdk_version: 5.29.0
-app_file: app.py
-pinned: false
-short_description: Expressive Zeroshot TTS
----
+# This is a modified version of Chatterbox TTS.
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+This fork has the following modifications:
+1. Accepts a text file as input.
+2. Each sentence is processed separately, written to a temp folder, then after all sentences have been written, they are concatenated into a single audio file.
+3. Outputs audio files to "outputs" folder.
