@@ -1,4 +1,4 @@
-# This is a modified version of Chatterbox TTS.
+# This is a modified version of [Chatterbox TTS](https://huggingface.co/spaces/ResembleAI/Chatterbox).
 
 This fork has the following modifications:
 1. Accepts a text file as input.
