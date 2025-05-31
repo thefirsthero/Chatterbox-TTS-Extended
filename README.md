@@ -5,8 +5,11 @@ This fork has the following modifications:
 2. Each sentence is processed separately, written to a temp folder, then after all sentences have been written, they are concatenated into a single audio file.
 3. Outputs audio files to "outputs" folder.
 
-Install via
+Clone the repo
+`git clone https://github.com/petermg/Chatterbox-TTS-Extended`
+
+Then install via
 `pip install -r requirements.txt`
 
-then run via
-`python app.py`
+Then run via
+`python Chatter.py`
