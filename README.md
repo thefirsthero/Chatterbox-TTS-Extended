@@ -16,6 +16,10 @@ NEW to this latest update and post:
 9. Multi-generational output. This is useful if you're looking for a good seed. For example use a few sentences and tell it to output 25 generations using random seeds. Listen to each one to find the seed that you like the most-it saves the audio files with the seed number at the end.
 10. Enable sentence batching up to 300 Characters.
 11. Smart-append short sentences (for when above batching is disabled)
+12. Added a method where after the temp audio chunk is generated, it is transcribed to validate if the words in the audio match the original text. If they do not match, the chunk is generated again. This is tried 3 times.
+13. Added the method where user can set number of samples to generate per chunk (3 by default) and then pick the one that is shortest and passed the above transcription test.
+14. Option to bypass the transcription test.
+15. Bypass generating multiple samples per chunk by setting `Number of Candidates Per Sentence` to 1.
 
 Clone the repo
 `git clone https://github.com/petermg/Chatterbox-TTS-Extended`
