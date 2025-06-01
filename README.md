@@ -25,3 +25,6 @@ Then install via
 
 Then run via
 `python Chatter.py`
+
+
+Ffmpeg is required. If you don't have it installed in your system path, put it in the same directory as the Chatter.py script.
