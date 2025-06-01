@@ -1,5 +1,6 @@
 gradio
 numpy
+openai-whisper
 ffmpeg-python
 auto-editor
 resampy==0.4.3
