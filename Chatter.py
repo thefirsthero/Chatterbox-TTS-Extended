@@ -10,13 +10,23 @@ import spaces
 import subprocess
 from pydub import AudioSegment
 import ffmpeg
+import librosa
+import string
+
+
 from chatterbox.src.chatterbox.tts import ChatterboxTTS
+
+import whisper
+import difflib
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🚀 Running on device: {DEVICE}")
 
 MODEL = None
+
+# Load Whisper ONCE at script startup for best performance
+WHISPER_MODEL = whisper.load_model("large")  # Change to 'medium' if you have less VRAM
 
 def get_or_load_model():
     global MODEL
@@ -151,6 +161,39 @@ def normalize_with_ffmpeg(input_wav, output_wav, method="ebu", i=-24, tp=-2, lra
         raise ValueError("Unknown normalization method.")
     os.replace(output_wav, input_wav)
 
+def transcribe_wav(path):
+    try:
+        result = WHISPER_MODEL.transcribe(path)
+        return result['text'].strip().lower()
+    except Exception as e:
+        print(f"[ERROR] Whisper transcription failed: {e}")
+        return ""
+
+import string
+
+def normalize_for_compare_all_punct(text):
+    # Replace all dashes/em-dashes/hyphens with spaces (safe, optional)
+    text = re.sub(r'[–—-]', ' ', text)
+    # Remove all ASCII punctuation
+    text = re.sub(rf"[{re.escape(string.punctuation)}]", '', text)
+    # Collapse multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    # Lowercase and strip leading/trailing spaces
+    return text.lower().strip()
+
+def fuzzy_match(text1, text2, threshold=0.68):
+    t1 = normalize_for_compare_all_punct(text1)
+    t2 = normalize_for_compare_all_punct(text2)
+    seq = difflib.SequenceMatcher(None, t1, t2)
+    return seq.ratio() >= threshold
+
+def get_wav_duration(path):
+    try:
+        return librosa.get_duration(filename=path)
+    except Exception as e:
+        print(f"[ERROR] librosa.get_duration failed: {e}")
+        return float('inf')
+
 @spaces.GPU
 def generate_batch_tts(
     text: str,
@@ -176,7 +219,9 @@ def generate_batch_tts(
     normalize_method: str,
     normalize_level: float,
     normalize_tp: float,
-    normalize_lra: float,  # <-- Added for LRA (for EBU only)
+    normalize_lra: float,
+    num_candidates_per_chunk: int,
+    bypass_whisper_checking: bool,  # <-- NEW PARAM
 ) -> str:
     model = get_or_load_model()
 
@@ -209,7 +254,6 @@ def generate_batch_tts(
 
     output_paths = []
     for gen_index in range(num_generations):
-        # Set a unique seed for each generation
         if seed_num_input == 0:
             this_seed = random.randint(1, 2**32 - 1)
         else:
@@ -226,20 +270,54 @@ def generate_batch_tts(
                 print(f"[DEBUG] Skipping suspiciously long sentence group at index {idx} (len={len(sentence_group)})")
                 continue
             print(f"[DEBUG] Processing group {idx}: len={len(sentence_group)} preview='{sentence_group[:80]}...'")
-            try:
-                wav = model.generate(
-                    sentence_group,
-                    audio_prompt_path=audio_prompt_path_input,
-                    exaggeration=min(exaggeration_input, 1.0),
-                    temperature=temperature_input,
-                    cfg_weight=cfgw_input,
-                    apply_watermark=not disable_watermark
-                )
-                path = f"temp/gen{gen_index+1}_chunk_{idx:03d}.wav"
-                torchaudio.save(path, wav, model.sr)
-                waveform_list.append(wav)
-            except Exception as e:
-                print(f"[ERROR] Failed generating chunk {idx}: {e}")
+
+            candidates = []
+            for cand_idx in range(num_candidates_per_chunk):
+                if cand_idx == 0:
+                    candidate_seed = this_seed
+                else:
+                    candidate_seed = random.randint(1, 2**32-1)
+                set_seed(candidate_seed)
+                try:
+                    wav = model.generate(
+                        sentence_group,
+                        audio_prompt_path=audio_prompt_path_input,
+                        exaggeration=min(exaggeration_input, 1.0),
+                        temperature=temperature_input,
+                        cfg_weight=cfgw_input,
+                        apply_watermark=not disable_watermark
+                    )
+                    candidate_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{cand_idx+1}.wav"
+                    torchaudio.save(candidate_path, wav, model.sr)
+                    duration = get_wav_duration(candidate_path)
+                    if bypass_whisper_checking:
+                        print(f"[DEBUG] Bypass: candidate {cand_idx+1}, duration={duration:.3f}s")
+                        candidates.append((duration, candidate_path))
+                    else:
+                        transcribed = transcribe_wav(candidate_path)
+                        print(f"[DEBUG] Whisper transcription (cand {cand_idx+1}): {transcribed!r}")
+                        print(f"[DEBUG] Target sentence: {sentence_group.strip().lower()!r}")
+                        if fuzzy_match(transcribed, sentence_group.strip().lower()):
+                            print(f"[DEBUG] Candidate {cand_idx+1} PASSED Whisper check, duration={duration:.3f}s")
+                            candidates.append((duration, candidate_path))
+                        else:
+                            print(f"[WARN] Candidate {cand_idx+1} FAILED Whisper check")
+                except Exception as e:
+                    print(f"[ERROR] Candidate {cand_idx+1} generation failed: {e}")
+
+            if candidates:
+                best_path = sorted(candidates, key=lambda x: x[0])[0][1]
+                print(f"[DEBUG] Selected {best_path} as best candidate for group {idx}")
+                waveform, sr = torchaudio.load(best_path)
+                waveform_list.append(waveform)
+            else:
+                fallback_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{num_candidates_per_chunk}.wav"
+                print(f"[WARNING] No candidate passed for group {idx}. Using last attempt: {fallback_path}")
+                try:
+                    waveform, sr = torchaudio.load(fallback_path)
+                    waveform_list.append(waveform)
+                except Exception as e:
+                    print(f"[ERROR] Could not load fallback: {e}")
 
         if not waveform_list:
             print(f"[WARNING] No audio generated in generation {gen_index+1}")
@@ -251,7 +329,6 @@ def generate_batch_tts(
         wav_output = f"output/audio_{filename_suffix}.wav"
         torchaudio.save(wav_output, full_audio, model.sr)
 
-        # --- AUTO-EDITOR for artifact removal (if selected) ---
         if use_auto_editor:
             try:
                 cleaned_output = wav_output.replace(".wav", "_cleaned.wav")
@@ -279,7 +356,6 @@ def generate_batch_tts(
             except Exception as e:
                 print(f"[ERROR] Auto-editor post-processing failed: {e}")
 
-        # --- ffmpeg-python for normalization (if selected) ---
         if normalize_audio:
             try:
                 norm_temp = wav_output.replace(".wav", "_norm.wav")
@@ -328,7 +404,6 @@ with gr.Blocks() as demo:
             threshold_slider = gr.Slider(0.01, 0.5, value=0.02, step=0.01, label="Auto-Editor Volume Threshold")
             margin_slider = gr.Slider(0.0, 2.0, value=0.2, step=0.1, label="Auto-Editor Margin (seconds)")
 
-            # === ffmpeg-python NORMALIZE OPTIONS ===
             normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=False)
             normalize_method_dropdown = gr.Dropdown(
                 choices=["ebu", "peak"], value="ebu", label="Normalization Method"
@@ -342,11 +417,12 @@ with gr.Blocks() as demo:
             normalize_lra_slider = gr.Slider(
                 1, 50, value=7, step=1, label="EBU Loudness Range (LRA, ebu only)"
             )
-            # ================
 
             export_format_dropdown = gr.Dropdown(choices=["wav", "mp3", "flac"], value="wav", label="Export Format")
             disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=False)
             num_generations_input = gr.Number(value=1, precision=0, label="Number of Generations")
+            num_candidates_slider = gr.Slider(1, 10, value=3, step=1, label="Number of Candidates Per Sentence")
+            bypass_whisper_checkbox = gr.Checkbox(label="Bypass Whisper Checking (pick shortest candidate regardless of transcription)", value=False)
             run_button = gr.Button("Generate")
         with gr.Column():
             output_audio = gr.Textbox(label="Final Audio Files")
@@ -361,13 +437,13 @@ with gr.Blocks() as demo:
             to_lowercase_checkbox, normalize_spacing_checkbox, fix_dot_letters_checkbox,
             keep_original_checkbox, smart_batch_short_sentences_checkbox,
             disable_watermark_checkbox, num_generations_input,
-            # === ffmpeg-python NORMALIZE OPTIONS ===
             normalize_audio_checkbox,
             normalize_method_dropdown,
             normalize_level_slider,
             normalize_tp_slider,
             normalize_lra_slider,
-            # ================
+            num_candidates_slider,
+            bypass_whisper_checkbox,  # <-- NEW UI CONTROL
         ],
         outputs=output_audio
     )
