@@ -9,6 +9,7 @@ import gradio as gr
 import spaces
 import subprocess
 from pydub import AudioSegment
+import ffmpeg
 from chatterbox.src.chatterbox.tts import ChatterboxTTS
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -128,6 +129,28 @@ def smart_append_short_sentences(sentences, max_chars=300):
                 i += 1
     return new_groups
 
+def normalize_with_ffmpeg(input_wav, output_wav, method="ebu", i=-24, tp=-2, lra=7):
+    if method == "ebu":
+        loudnorm = f"loudnorm=I={i}:TP={tp}:LRA={lra}"
+        (
+            ffmpeg
+            .input(input_wav)
+            .output(output_wav, af=loudnorm)
+            .overwrite_output()
+            .run(quiet=True)
+        )
+    elif method == "peak":
+        (
+            ffmpeg
+            .input(input_wav)
+            .output(output_wav, af="dynaudnorm")
+            .overwrite_output()
+            .run(quiet=True)
+        )
+    else:
+        raise ValueError("Unknown normalization method.")
+    os.replace(output_wav, input_wav)
+
 @spaces.GPU
 def generate_batch_tts(
     text: str,
@@ -148,7 +171,12 @@ def generate_batch_tts(
     keep_original_wav: bool,
     smart_batch_short_sentences: bool,
     disable_watermark: bool,
-    num_generations: int
+    num_generations: int,
+    normalize_audio: bool,
+    normalize_method: str,
+    normalize_level: float,
+    normalize_tp: float,
+    normalize_lra: float,  # <-- Added for LRA (for EBU only)
 ) -> str:
     model = get_or_load_model()
 
@@ -223,6 +251,7 @@ def generate_batch_tts(
         wav_output = f"output/audio_{filename_suffix}.wav"
         torchaudio.save(wav_output, full_audio, model.sr)
 
+        # --- AUTO-EDITOR for artifact removal (if selected) ---
         if use_auto_editor:
             try:
                 cleaned_output = wav_output.replace(".wav", "_cleaned.wav")
@@ -233,20 +262,38 @@ def generate_batch_tts(
                 else:
                     auto_editor_input = wav_output
 
-                subprocess.run([
+                auto_editor_cmd = [
                     "auto-editor",
                     "--edit", f"audio:threshold={ae_threshold}",
                     "--margin", f"{ae_margin}s",
                     "--export", "audio",
                     auto_editor_input,
                     "-o", cleaned_output
-                ], check=True)
+                ]
+
+                subprocess.run(auto_editor_cmd, check=True)
 
                 if os.path.exists(cleaned_output):
                     os.replace(cleaned_output, wav_output)
                     print(f"[DEBUG] Post-processed with auto-editor: {wav_output}")
             except Exception as e:
                 print(f"[ERROR] Auto-editor post-processing failed: {e}")
+
+        # --- ffmpeg-python for normalization (if selected) ---
+        if normalize_audio:
+            try:
+                norm_temp = wav_output.replace(".wav", "_norm.wav")
+                normalize_with_ffmpeg(
+                    wav_output,
+                    norm_temp,
+                    method=normalize_method,
+                    i=normalize_level,
+                    tp=normalize_tp,
+                    lra=normalize_lra,
+                )
+                print(f"[DEBUG] Post-processed with ffmpeg normalization: {wav_output}")
+            except Exception as e:
+                print(f"[ERROR] ffmpeg normalization failed: {e}")
 
         if export_format.lower() != "wav":
             audio = AudioSegment.from_wav(wav_output)
@@ -280,6 +327,23 @@ with gr.Blocks() as demo:
             keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=False)
             threshold_slider = gr.Slider(0.01, 0.5, value=0.02, step=0.01, label="Auto-Editor Volume Threshold")
             margin_slider = gr.Slider(0.0, 2.0, value=0.2, step=0.1, label="Auto-Editor Margin (seconds)")
+
+            # === ffmpeg-python NORMALIZE OPTIONS ===
+            normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=False)
+            normalize_method_dropdown = gr.Dropdown(
+                choices=["ebu", "peak"], value="ebu", label="Normalization Method"
+            )
+            normalize_level_slider = gr.Slider(
+                -70, -5, value=-24, step=1, label="EBU Target Integrated Loudness (I, dB, ebu only)"
+            )
+            normalize_tp_slider = gr.Slider(
+                -9, 0, value=-2, step=1, label="EBU True Peak (TP, dB, ebu only)"
+            )
+            normalize_lra_slider = gr.Slider(
+                1, 50, value=7, step=1, label="EBU Loudness Range (LRA, ebu only)"
+            )
+            # ================
+
             export_format_dropdown = gr.Dropdown(choices=["wav", "mp3", "flac"], value="wav", label="Export Format")
             disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=False)
             num_generations_input = gr.Number(value=1, precision=0, label="Number of Generations")
@@ -296,7 +360,14 @@ with gr.Blocks() as demo:
             export_format_dropdown, enable_batching_checkbox,
             to_lowercase_checkbox, normalize_spacing_checkbox, fix_dot_letters_checkbox,
             keep_original_checkbox, smart_batch_short_sentences_checkbox,
-            disable_watermark_checkbox, num_generations_input
+            disable_watermark_checkbox, num_generations_input,
+            # === ffmpeg-python NORMALIZE OPTIONS ===
+            normalize_audio_checkbox,
+            normalize_method_dropdown,
+            normalize_level_slider,
+            normalize_tp_slider,
+            normalize_lra_slider,
+            # ================
         ],
         outputs=output_audio
     )
