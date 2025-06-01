@@ -1,5 +1,7 @@
 gradio
-numpy==1.26.0
+numpy
+ffmpeg-python
+auto-editor
 resampy==0.4.3
 librosa==0.10.0
 s3tokenizer
