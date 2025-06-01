@@ -21,10 +21,13 @@ Clone the repo
 `git clone https://github.com/petermg/Chatterbox-TTS-Extended`
 
 Then install via
-`pip install -r requirements.txt`
+`pip install -r requirements.txt`  
+
+<sup> if for some reason the install doesn't run try doing </sup> `pip install -r requirements.base.with.versions.txt`, 
+<sup> and if that still doesn't work then do </sup> `pip install -r requirements_frozen.txt`
 
 Then run via
 `python Chatter.py`
 
 
-Ffmpeg is required. If you don't have it installed in your system path, put it in the same directory as the Chatter.py script.
+FFMPEG is required. If you don't have it installed in your system path, put it in the same directory as the Chatter.py script.
