@@ -12,21 +12,17 @@ from pydub import AudioSegment
 import ffmpeg
 import librosa
 import string
-
+import difflib
 
 from chatterbox.src.chatterbox.tts import ChatterboxTTS
-
 import whisper
-import difflib
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🚀 Running on device: {DEVICE}")
 
 MODEL = None
-
-# Load Whisper ONCE at script startup for best performance
-WHISPER_MODEL = whisper.load_model("large")  # Change to 'medium' if you have less VRAM
+WHISPER_MODEL = whisper.load_model("large")  # Use 'medium' for less VRAM
 
 def get_or_load_model():
     global MODEL
@@ -169,8 +165,6 @@ def transcribe_wav(path):
         print(f"[ERROR] Whisper transcription failed: {e}")
         return ""
 
-import string
-
 def normalize_for_compare_all_punct(text):
     # Replace all dashes/em-dashes/hyphens with spaces (safe, optional)
     text = re.sub(r'[–—-]', ' ', text)
@@ -181,7 +175,7 @@ def normalize_for_compare_all_punct(text):
     # Lowercase and strip leading/trailing spaces
     return text.lower().strip()
 
-def fuzzy_match(text1, text2, threshold=0.68):
+def fuzzy_match(text1, text2, threshold=0.95):
     t1 = normalize_for_compare_all_punct(text1)
     t2 = normalize_for_compare_all_punct(text2)
     seq = difflib.SequenceMatcher(None, t1, t2)
@@ -221,7 +215,8 @@ def generate_batch_tts(
     normalize_tp: float,
     normalize_lra: float,
     num_candidates_per_chunk: int,
-    bypass_whisper_checking: bool,  # <-- NEW PARAM
+    max_attempts_per_candidate: int,
+    bypass_whisper_checking: bool,
 ) -> str:
     model = get_or_load_model()
 
@@ -271,53 +266,71 @@ def generate_batch_tts(
                 continue
             print(f"[DEBUG] Processing group {idx}: len={len(sentence_group)} preview='{sentence_group[:80]}...'")
 
-            candidates = []
-            for cand_idx in range(num_candidates_per_chunk):
-                if cand_idx == 0:
-                    candidate_seed = this_seed
-                else:
-                    candidate_seed = random.randint(1, 2**32-1)
-                set_seed(candidate_seed)
-                try:
-                    wav = model.generate(
-                        sentence_group,
-                        audio_prompt_path=audio_prompt_path_input,
-                        exaggeration=min(exaggeration_input, 1.0),
-                        temperature=temperature_input,
-                        cfg_weight=cfgw_input,
-                        apply_watermark=not disable_watermark
-                    )
-                    candidate_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{cand_idx+1}.wav"
-                    torchaudio.save(candidate_path, wav, model.sr)
-                    duration = get_wav_duration(candidate_path)
-                    if bypass_whisper_checking:
-                        print(f"[DEBUG] Bypass: candidate {cand_idx+1}, duration={duration:.3f}s")
-                        candidates.append((duration, candidate_path))
-                    else:
-                        transcribed = transcribe_wav(candidate_path)
-                        print(f"[DEBUG] Whisper transcription (cand {cand_idx+1}): {transcribed!r}")
-                        print(f"[DEBUG] Target sentence: {sentence_group.strip().lower()!r}")
-                        if fuzzy_match(transcribed, sentence_group.strip().lower()):
-                            print(f"[DEBUG] Candidate {cand_idx+1} PASSED Whisper check, duration={duration:.3f}s")
-                            candidates.append((duration, candidate_path))
-                        else:
-                            print(f"[WARN] Candidate {cand_idx+1} FAILED Whisper check")
-                except Exception as e:
-                    print(f"[ERROR] Candidate {cand_idx+1} generation failed: {e}")
+            passed_candidates = []
+            failed_candidates = []
 
-            if candidates:
-                best_path = sorted(candidates, key=lambda x: x[0])[0][1]
-                print(f"[DEBUG] Selected {best_path} as best candidate for group {idx}")
+            for cand_idx in range(num_candidates_per_chunk):
+                passed = False
+                last_path = None
+                last_duration = None
+                for attempt in range(max_attempts_per_candidate):
+                    # Use main seed for first candidate, first attempt
+                    if cand_idx == 0 and attempt == 0:
+                        candidate_seed = this_seed
+                    else:
+                        candidate_seed = random.randint(1, 2**32-1)
+                    set_seed(candidate_seed)
+                    try:
+                        wav = model.generate(
+                            sentence_group,
+                            audio_prompt_path=audio_prompt_path_input,
+                            exaggeration=min(exaggeration_input, 1.0),
+                            temperature=temperature_input,
+                            cfg_weight=cfgw_input,
+                            apply_watermark=not disable_watermark
+                        )
+                        candidate_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{cand_idx+1}_try{attempt+1}.wav"
+                        torchaudio.save(candidate_path, wav, model.sr)
+                        duration = get_wav_duration(candidate_path)
+                        last_path = candidate_path
+                        last_duration = duration
+                        if bypass_whisper_checking:
+                            print(f"[DEBUG] Bypass: candidate {cand_idx+1}, duration={duration:.3f}s")
+                            passed_candidates.append((duration, candidate_path))
+                            passed = True
+                            break
+                        else:
+                            transcribed = transcribe_wav(candidate_path)
+                            print(f"[DEBUG] Whisper transcription (cand {cand_idx+1}, attempt {attempt+1}): {transcribed!r}")
+                            print(f"[DEBUG] Target sentence: {sentence_group.strip().lower()!r}")
+                            if fuzzy_match(transcribed, sentence_group.strip().lower()):
+                                print(f"[DEBUG] Candidate {cand_idx+1} PASSED Whisper check, duration={duration:.3f}s")
+                                passed_candidates.append((duration, candidate_path))
+                                passed = True
+                                break
+                            else:
+                                print(f"[WARN] Candidate {cand_idx+1}, attempt {attempt+1} FAILED Whisper check")
+                    except Exception as e:
+                        print(f"[ERROR] Candidate {cand_idx+1} generation attempt {attempt+1} failed: {e}")
+                if not passed and last_path is not None:
+                    print(f"[WARNING] Candidate {cand_idx+1} failed all attempts. Including last attempt.")
+                    failed_candidates.append((last_duration, last_path))
+
+            if passed_candidates:
+                best_path = sorted(passed_candidates, key=lambda x: x[0])[0][1]
+                print(f"[DEBUG] Selected {best_path} as best candidate for group {idx} (PASSED Whisper check)")
                 waveform, sr = torchaudio.load(best_path)
                 waveform_list.append(waveform)
-            else:
-                fallback_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{num_candidates_per_chunk}.wav"
-                print(f"[WARNING] No candidate passed for group {idx}. Using last attempt: {fallback_path}")
+            elif failed_candidates:
+                best_path = sorted(failed_candidates, key=lambda x: x[0])[0][1]
+                print(f"[WARNING] No candidate passed for group {idx}. Using shortest failed candidate: {best_path}")
                 try:
-                    waveform, sr = torchaudio.load(fallback_path)
+                    waveform, sr = torchaudio.load(best_path)
                     waveform_list.append(waveform)
                 except Exception as e:
                     print(f"[ERROR] Could not load fallback: {e}")
+            else:
+                print(f"[ERROR] No candidates were generated for group {idx}.")
 
         if not waveform_list:
             print(f"[WARNING] No audio generated in generation {gen_index+1}")
@@ -421,7 +434,8 @@ with gr.Blocks() as demo:
             export_format_dropdown = gr.Dropdown(choices=["wav", "mp3", "flac"], value="wav", label="Export Format")
             disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=False)
             num_generations_input = gr.Number(value=1, precision=0, label="Number of Generations")
-            num_candidates_slider = gr.Slider(1, 10, value=3, step=1, label="Number of Candidates Per Sentence")
+            num_candidates_slider = gr.Slider(1, 10, value=3, step=1, label="Number of Candidates Per Chunk (after batching)")
+            max_attempts_slider = gr.Slider(1, 10, value=3, step=1, label="Max Attempts Per Candidate (Whisper check retries)")
             bypass_whisper_checkbox = gr.Checkbox(label="Bypass Whisper Checking (pick shortest candidate regardless of transcription)", value=False)
             run_button = gr.Button("Generate")
         with gr.Column():
@@ -443,7 +457,8 @@ with gr.Blocks() as demo:
             normalize_tp_slider,
             normalize_lra_slider,
             num_candidates_slider,
-            bypass_whisper_checkbox,  # <-- NEW UI CONTROL
+            max_attempts_slider,
+            bypass_whisper_checkbox,
         ],
         outputs=output_audio
     )
