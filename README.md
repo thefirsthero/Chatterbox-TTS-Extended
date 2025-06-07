@@ -202,6 +202,9 @@ Open an issue or pull request with your suggestions, bug reports, or improvement
 
 ---
 
+# Installation
+
+I'm running this in a Python 3.10.6 virtual environment. I do not know what other versions work.
 
 Clone the repo
 `git clone https://github.com/petermg/Chatterbox-TTS-Extended`
