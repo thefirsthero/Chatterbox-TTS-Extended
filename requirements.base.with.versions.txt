@@ -1,5 +1,6 @@
 gradio==5.32.0
 numpy==2.2.6
+nltk==3.9.1
 openai-whisper==20240930
 ffmpeg-python==0.2.0
 auto-editor==27.1.1
