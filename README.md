@@ -219,4 +219,4 @@ Then run via
 `python Chatter.py`
 
 
-FFMPEG is required. If you don't have it installed in your system path, put it in the same directory as the Chatter.py script.
+[FFMPEG](https://ffmpeg.org/download.html) is required. If you don't have it installed in your system path, put it in the same directory as the Chatter.py script.
