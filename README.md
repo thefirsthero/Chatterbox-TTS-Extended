@@ -140,7 +140,6 @@ Chatterbox-TTS-Extended is an advanced, highly customizable text-to-speech (TTS)
 ### **Parallel Chunk Processing**
 - Synthesizes multiple chunks at once for huge speed gains on capable GPUs.
 - **Parallel Workers:** Set the number of concurrent jobs (1 = sequential, higher = more parallelism).
-- **Hidden/forced enabled:** Parallel mode is always on; set workers as needed.
 
 ---
 
