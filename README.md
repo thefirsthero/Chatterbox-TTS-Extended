@@ -152,7 +152,6 @@ Chatterbox-TTS-Extended is an advanced, highly customizable text-to-speech (TTS)
 ### **Whisper-Based Validation**
 - Each audio candidate is transcribed using Whisper and checked against the original input.
 - The best candidate is selected by highest match score (or shortest duration if Whisper is bypassed).
-
 ---
 
 ## Other Features
