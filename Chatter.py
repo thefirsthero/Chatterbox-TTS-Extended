@@ -558,7 +558,7 @@ def process_text_for_tts(
                     completed += 1
                     percent = int(100 * completed / total_chunks)
                     print(f"\033[36m[PROGRESS] Generated chunk {completed}/{total_chunks} ({percent}%)\033[0m")
-'''        else:
+        else:
             # -------- SEQUENTIAL CHUNK GENERATION & ADAPTIVE RETRY --------
             total_chunks = len(sentence_groups)
 
@@ -696,7 +696,7 @@ def process_text_for_tts(
                 print("\033[32m[DEBUG] Whisper model deleted and VRAM cache cleared after generation.\033[0m")
 
         waveform_list = []
-'''
+
         if enable_parallel:
             if not bypass_whisper_checking:
                 print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
