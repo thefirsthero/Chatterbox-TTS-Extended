@@ -17,6 +17,7 @@ Chatterbox-TTS-Extended is an advanced, highly customizable text-to-speech (TTS)
 - [Whisper Sync & Validation](#whisper-sync--validation)
 - [Other Features](#other-features)
 - [Tips & Troubleshooting](#tips--troubleshooting)
+- [Installation](#installation)
 
 ---
 
