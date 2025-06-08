@@ -698,11 +698,16 @@ def process_text_for_tts(
             # Bypass Whisper: pick shortest duration per chunk
             for chunk_idx in sorted(chunk_candidate_map.keys()):
                 candidates = chunk_candidate_map[chunk_idx]
-                if candidates:
-                    best = min(candidates, key=lambda c: c['duration'])
+                # Only consider candidates whose files exist and are > 1024 bytes
+                valid_candidates = [c for c in candidates if os.path.exists(c['path']) and os.path.getsize(c['path']) > 1024]
+                if valid_candidates:
+                    best = min(valid_candidates, key=lambda c: c['duration'])
                     print(f"\033[32m[DEBUG] [Bypass Whisper] Selected {best['path']} as shortest candidate for chunk {chunk_idx}\033[0m")
                     waveform, sr = torchaudio.load(best['path'])
                     waveform_list.append(waveform)
+                else:
+                    print(f"\033[33m[WARNING] No valid candidates found for chunk {chunk_idx} (all generations failed)\033[0m")
+                    
 
         if not waveform_list:
             print(f"\033[33m[WARNING] No audio generated in generation {gen_index+1}\033[0m")
