@@ -124,6 +124,8 @@ class ChatterboxTTS:
         self.device = device
         self.conds = conds
         self.watermarker = perth.PerthImplicitWatermarker()
+        self.default_conds = conds  # <-- Save initial conds (default voice)
+
 
     @classmethod
     def from_local(cls, ckpt_dir, device) -> 'ChatterboxTTS':
@@ -217,7 +219,10 @@ class ChatterboxTTS:
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
         else:
-            assert self.conds is not None, "Please `prepare_conditionals` first or specify `audio_prompt_path`"
+            if self.default_conds is not None:
+                self.conds = self.default_conds  # Restore default speaker embedding
+            else:
+                raise RuntimeError("No default speaker embedding available; cannot reset to base voice.")
 
         # Update exaggeration if needed
         if exaggeration != self.conds.t3.emotion_adv[0, 0, 0]:
