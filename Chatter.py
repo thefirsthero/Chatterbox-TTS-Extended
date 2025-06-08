@@ -855,7 +855,7 @@ In the Land of Mordor where the Shadows lie."""
                 run_button = gr.Button("Generate")
             with gr.Column():
                 exaggeration_slider = gr.Slider(0.0, 2.0, value=0.5, step=0.1, label="Emotion Exaggeration")
-                cfg_weight_slider = gr.Slider(0.1, 1.0, value=1.0, step=0.01, label="CFG Weight")
+                cfg_weight_slider = gr.Slider(0.1, 1.0, value=1.0, step=0.01, label="CFG Weight/Pace")
                 temp_slider = gr.Slider(0.01, 5.0, value=0.75, step=0.05, label="Temperature")
                 seed_input = gr.Number(value=0, label="Random Seed (0 for random)")
                 enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=False)
