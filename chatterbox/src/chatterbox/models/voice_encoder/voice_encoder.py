@@ -258,10 +258,28 @@ class VoiceEncoder(nn.Module):
         :param trim_top_db: this argument was only added for the sake of compatibility with metavoice's implementation
         """
         if sample_rate != self.hp.sample_rate:
-            wavs = [
-                librosa.resample(wav, orig_sr=sample_rate, target_sr=self.hp.sample_rate, res_type="kaiser_best")
-                for wav in wavs
-            ]
+            new_wavs = []
+            for wav in wavs:
+                # Convert numpy array to torch tensor
+                wav_tensor = torch.from_numpy(wav).float()
+                # Ensure shape is (channels, samples) for torchaudio (mono: (1, N))
+                if wav_tensor.ndim == 1:
+                    wav_tensor = wav_tensor.unsqueeze(0)
+                # Resample using torchaudio
+                resampled = taF.resample(
+                    wav_tensor,
+                    orig_freq=sample_rate,
+                    new_freq=self.hp.sample_rate,
+                    # These are the “best” settings from PyTorch’s docs:
+                    lowpass_filter_width=64,
+                    rolloff=0.9475937167399596,
+                    resampling_method="sinc_interp_kaiser",
+                    beta=14.769656459379492,
+                )
+                # Convert back to 1D numpy array
+                new_wavs.append(resampled.squeeze(0).cpu().numpy())
+            wavs = new_wavs
+
 
         if trim_top_db:
             wavs = [librosa.effects.trim(wav, top_db=trim_top_db)[0] for wav in wavs]
