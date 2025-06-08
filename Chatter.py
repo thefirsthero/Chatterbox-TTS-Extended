@@ -19,7 +19,6 @@ from chatterbox.src.chatterbox.tts import ChatterboxTTS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import whisper
 import nltk
-
 from nltk.tokenize import sent_tokenize
 
 # Download both punkt and punkt_tab if missing
@@ -31,7 +30,6 @@ try:
     nltk.data.find('tokenizers/punkt_tab')
 except LookupError:
     nltk.download('punkt_tab')
-
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -75,7 +73,6 @@ def replace_letter_period_sequences(text: str) -> str:
 def split_into_sentences(text):
     # NLTK's Punkt tokenizer handles abbreviations and common English quirks
     return sent_tokenize(text)
-
 
 def group_sentences(sentences, max_chars=400):
     chunks = []
@@ -193,7 +190,6 @@ def fuzzy_match(text1, text2, threshold=0.95):
     seq = difflib.SequenceMatcher(None, t1, t2)
     return seq.ratio() >= threshold
 
-
 def parse_sound_word_field(user_input):
     # Accepts comma or newline separated, allows 'sound=>replacement'
     lines = [l.strip() for l in user_input.replace(',', '\n').split('\n') if l.strip()]
@@ -252,9 +248,7 @@ def smart_remove_sound_words(text, sound_words):
     text = re.sub(r',+\s*([\.!\?])', r'\1', text)
     return text.strip()
 
-
-def whisper_check_mp(candidate_path, target_text, whisper_model_name):
-    import whisper
+def whisper_check_mp(candidate_path, target_text, whisper_model):
     import difflib
     import re
     import string
@@ -269,9 +263,8 @@ def whisper_check_mp(candidate_path, target_text, whisper_model_name):
 
     try:
         print(f"\033[32m[DEBUG] [MPID={os.getpid()}] Whisper checking: {candidate_path}\033[0m")
-        model = whisper.load_model(whisper_model_name)
-        print(f"\033[32m[DEBUG] Whisper model in process {os.getpid()} on device: {next(model.parameters()).device}\033[0m")
-        result = model.transcribe(candidate_path)
+        print(f"\033[32m[DEBUG] Whisper model in process {os.getpid()} on device: {next(whisper_model.parameters()).device}\033[0m")
+        result = whisper_model.transcribe(candidate_path)
         transcribed = result['text'].strip().lower()
         print(f"\033[32m[DEBUG] [MPID={os.getpid()}] Whisper transcription: '\033[33m{transcribed}' for candidate '{os.path.basename(candidate_path)}'\033[0m")
         score = difflib.SequenceMatcher(
@@ -284,7 +277,8 @@ def whisper_check_mp(candidate_path, target_text, whisper_model_name):
     except Exception as e:
         print(f"[ERROR] [MPID={os.getpid()}] Whisper transcription failed for {candidate_path}: {e}")
         return (candidate_path, 0.0, f"ERROR: {e}")
-
+        
+        
 def process_one_chunk(
     model, sentence_group, idx, gen_index, this_seed,
     audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
@@ -344,6 +338,15 @@ def process_one_chunk(
         print(f"[ERROR] Exception in chunk {idx}: {exc}")
     return (idx, candidates)
 
+def generate_and_preview(*args):
+    output_paths = generate_batch_tts(*args)
+    audio_files = [p for p in output_paths if os.path.splitext(p)[1].lower() in [".wav", ".mp3", ".flac"]]
+    dropdown_value = audio_files[0] if audio_files else None
+    return output_paths, gr.Dropdown(choices=audio_files, value=dropdown_value), dropdown_value
+
+def update_audio_preview(selected_path):
+    return selected_path
+    
 @spaces.GPU
 def generate_batch_tts(
     text: str,
@@ -466,9 +469,6 @@ def generate_batch_tts(
             num_parallel_workers, use_longest_transcript_on_fail, sound_words_field
         )
 
-
-
-
 def process_text_for_tts(
     text,
     input_basename,
@@ -503,15 +503,15 @@ def process_text_for_tts(
     use_longest_transcript_on_fail,
     sound_words_field,
 ):
-    model = get_or_load_model()  # <-- This line goes here
+    model = get_or_load_model()
     if not text or len(text.strip()) == 0:
         raise ValueError("No text provided.")
+    
     # ---- NEW: Apply sound word removals/replacements ----
     if sound_words_field and sound_words_field.strip():
         sound_words = parse_sound_word_field(sound_words_field)
         if sound_words:
             text = smart_remove_sound_words(text, sound_words)
-    
 
     if to_lowercase:
         text = text.lower()
@@ -545,8 +545,9 @@ def process_text_for_tts(
         print(f"\033[32m[DEBUG] Starting generation {gen_index+1}/{num_generations} with seed {this_seed}\033[0m")
 
         chunk_candidate_map = {}
+        waveform_list = []  # Initialize waveform_list here to ensure it’s defined
 
-        # -------- PARALLEL TTS CHUNK GENERATION --------
+        # -------- CHUNK GENERATION --------
         if enable_parallel:
             total_chunks = len(sentence_groups)
             completed = 0
@@ -566,12 +567,21 @@ def process_text_for_tts(
                     completed += 1
                     percent = int(100 * completed / total_chunks)
                     print(f"\033[36m[PROGRESS] Generated chunk {completed}/{total_chunks} ({percent}%)\033[0m")
+        else:
+            # Sequential mode: Process chunks one by one
+            for idx, group in enumerate(sentence_groups):
+                idx, candidates = process_one_chunk(
+                    model, group, idx, gen_index, this_seed,
+                    audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
+                    disable_watermark, num_candidates_per_chunk, max_attempts_per_candidate, bypass_whisper_checking
+                )
+                chunk_candidate_map[idx] = candidates
 
-        if enable_parallel:
-            if not bypass_whisper_checking:
-                print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
-                whisper_model = whisper.load_model(whisper_model_name)
-
+        # -------- WHISPER VALIDATION --------
+        if not bypass_whisper_checking:
+            print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
+            whisper_model = whisper.load_model(whisper_model_name)  # Load model once
+            try:
                 all_candidates = []
                 for chunk_idx, candidates in chunk_candidate_map.items():
                     for cand in candidates:
@@ -580,23 +590,16 @@ def process_text_for_tts(
                 chunk_validations = {chunk_idx: [] for chunk_idx in chunk_candidate_map}
                 chunk_failed_candidates = {chunk_idx: [] for chunk_idx in chunk_candidate_map}
 
-                # 1. Initial sequential Whisper validation
+                # Initial sequential Whisper validation
                 for chunk_idx, cand in all_candidates:
                     candidate_path = cand['path']
                     sentence_group = cand['sentence_group']
                     try:
-                        # Defensive: skip too small files
                         if not os.path.exists(candidate_path) or os.path.getsize(candidate_path) < 1024:
                             print(f"[ERROR] Candidate file missing or too small: {candidate_path}")
                             chunk_failed_candidates[chunk_idx].append((0.0, candidate_path, ""))
                             continue
-                        result = whisper_model.transcribe(candidate_path)
-                        transcribed = result['text'].strip().lower()
-                        score = difflib.SequenceMatcher(
-                            None,
-                            normalize_for_compare_all_punct(transcribed),
-                            normalize_for_compare_all_punct(sentence_group.strip().lower())
-                        ).ratio()
+                        path, score, transcribed = whisper_check_mp(candidate_path, sentence_group, whisper_model)
                         print(f"\033[32m[DEBUG] [Chunk {chunk_idx}] {os.path.basename(candidate_path)}: score={score:.3f}, transcript=\033[33m'{transcribed}'\033[0m")
                         if score >= 0.95:
                             chunk_validations[chunk_idx].append((cand['duration'], cand['path']))
@@ -606,26 +609,20 @@ def process_text_for_tts(
                         print(f"[ERROR] Whisper transcription failed for {candidate_path}: {e}")
                         chunk_failed_candidates[chunk_idx].append((0.0, candidate_path, ""))
 
-                # 2. Build retry queue for chunks where all candidates failed
+                # Retry block for failed chunks
                 retry_queue = [chunk_idx for chunk_idx in sorted(chunk_candidate_map.keys()) if not chunk_validations[chunk_idx]]
-
-                # ---- Begin Fixed Retry Block for Parallel Mode ----
-
-                # Track attempts for each chunk
-                chunk_attempts = {chunk_idx: 1 for chunk_idx in retry_queue}  # Initial attempt is done
+                chunk_attempts = {chunk_idx: 1 for chunk_idx in retry_queue}
 
                 while retry_queue:
-                    # For each chunk in retry_queue, check if we've already tried max_attempts_per_candidate
                     still_need_retry = [
                         chunk_idx for chunk_idx in retry_queue
                         if chunk_attempts[chunk_idx] < max_attempts_per_candidate
                     ]
                     if not still_need_retry:
-                        break  # No chunks left that can be retried
+                        break
 
                     print(f"\033[33m[RETRY] Retrying {len(still_need_retry)} chunks, attempt {chunk_attempts[still_need_retry[0]]+1} of {max_attempts_per_candidate}\033[0m")
 
-                    # Parallel synthesis for all still-failed chunks
                     retry_candidate_map = {}
                     with ThreadPoolExecutor(max_workers=num_parallel_workers) as executor:
                         futures = [
@@ -637,10 +634,9 @@ def process_text_for_tts(
                                 gen_index,
                                 random.randint(1, 2**32-1),
                                 audio_prompt_path_input, exaggeration_input, temperature_input, cfgw_input,
-                                disable_watermark, num_candidates_per_chunk, 1,  # Only 1 attempt per call per candidate
+                                disable_watermark, num_candidates_per_chunk, 1,
                                 bypass_whisper_checking,
-                                chunk_attempts[chunk_idx] + 1  # Pass current retry attempt (starting from 2 on first retry)
-                                
+                                chunk_attempts[chunk_idx] + 1
                             )
                             for chunk_idx in still_need_retry
                         ]
@@ -648,7 +644,6 @@ def process_text_for_tts(
                             idx, candidates = future.result()
                             retry_candidate_map[idx] = candidates
 
-                    # Sequential Whisper validation for new candidates
                     for chunk_idx, candidates in retry_candidate_map.items():
                         for cand in candidates:
                             candidate_path = cand['path']
@@ -658,13 +653,7 @@ def process_text_for_tts(
                                     print(f"[ERROR] Retry candidate file missing or too small: {candidate_path}")
                                     chunk_failed_candidates[chunk_idx].append((0.0, candidate_path, ""))
                                     continue
-                                result = whisper_model.transcribe(candidate_path)
-                                transcribed = result['text'].strip().lower()
-                                score = difflib.SequenceMatcher(
-                                    None,
-                                    normalize_for_compare_all_punct(transcribed),
-                                    normalize_for_compare_all_punct(sentence_group.strip().lower())
-                                ).ratio()
+                                path, score, transcribed = whisper_check_mp(candidate_path, sentence_group, whisper_model)
                                 print(f"\033[32m[DEBUG] [Chunk {chunk_idx}] RETRY {os.path.basename(candidate_path)}: score={score:.3f}, transcript=\033[33m'{transcribed}'\033[0m")
                                 if score >= 0.95:
                                     chunk_validations[chunk_idx].append((cand['duration'], cand['path']))
@@ -674,18 +663,11 @@ def process_text_for_tts(
                                 print(f"[ERROR] Whisper transcription failed for retry {candidate_path}: {e}")
                                 chunk_failed_candidates[chunk_idx].append((0.0, candidate_path, ""))
 
-                    # Remove from retry_queue any chunk_idx that now has a passing candidate
                     retry_queue = [chunk_idx for chunk_idx in still_need_retry if not chunk_validations[chunk_idx]]
-
-                    # Increment the attempts counter for all chunks just retried
                     for chunk_idx in still_need_retry:
                         chunk_attempts[chunk_idx] += 1
 
-                # ---- End Fixed Retry Block ----
-
-
-                # 5. Assemble waveform list using shortest passing or best fallback
-                waveform_list = []
+                # Assemble waveform list
                 for chunk_idx in sorted(chunk_candidate_map.keys()):
                     if chunk_validations[chunk_idx]:
                         best_path = sorted(chunk_validations[chunk_idx], key=lambda x: x[0])[0][1]
@@ -703,18 +685,24 @@ def process_text_for_tts(
                         waveform_list.append(waveform)
                     else:
                         print(f"[ERROR] No candidates were generated for chunk {chunk_idx}.")
-
-
-            else:
-                waveform_list = []  # <--- ADD THIS LINE
-                # Bypass Whisper: just pick shortest duration per chunk, IN CORRECT ORDER
-                for chunk_idx in sorted(chunk_candidate_map.keys()):
-                    candidates = chunk_candidate_map[chunk_idx]
-                    if candidates:
-                        best = min(candidates, key=lambda c: c['duration'])
-                        print(f"\033[32m[DEBUG] [Bypass Whisper] Selected {best['path']} as shortest candidate for chunk {chunk_idx}\033[0m")
-                        waveform, sr = torchaudio.load(best['path'])
-                        waveform_list.append(waveform)
+            finally:
+                # Clean up Whisper model
+                try:
+                    del whisper_model
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    print("\033[32m[DEBUG] Whisper model deleted and VRAM cache cleared.\033[0m")
+                except Exception as e:
+                    print(f"\033[32m[DEBUG] Could not delete Whisper model: {e}\033[0m")
+        else:
+            # Bypass Whisper: pick shortest duration per chunk
+            for chunk_idx in sorted(chunk_candidate_map.keys()):
+                candidates = chunk_candidate_map[chunk_idx]
+                if candidates:
+                    best = min(candidates, key=lambda c: c['duration'])
+                    print(f"\033[32m[DEBUG] [Bypass Whisper] Selected {best['path']} as shortest candidate for chunk {chunk_idx}\033[0m")
+                    waveform, sr = torchaudio.load(best['path'])
+                    waveform_list.append(waveform)
 
         if not waveform_list:
             print(f"\033[33m[WARNING] No audio generated in generation {gen_index+1}\033[0m")
@@ -769,9 +757,7 @@ def process_text_for_tts(
             except Exception as e:
                 print(f"[ERROR] ffmpeg normalization failed: {e}")
 
-
-        gen_outputs = []  # outputs for this generation
-
+        gen_outputs = []
         for export_format in export_formats:
             if export_format.lower() == "wav":
                 gen_outputs.append(wav_output)
@@ -779,18 +765,13 @@ def process_text_for_tts(
                 audio = AudioSegment.from_wav(wav_output)
                 final_output = wav_output.replace(".wav", f".{export_format}")
                 export_kwargs = {}
-
                 if export_format.lower() == "mp3":
                     export_kwargs["bitrate"] = "320k"
-                # elif export_format.lower() == "flac":
-                #     export_kwargs["parameters"] = ["-compression_level", "8"]
-
                 audio.export(final_output, format=export_format, **export_kwargs)
                 gen_outputs.append(final_output)
 
         output_paths.extend(gen_outputs)
 
-        # Only delete the WAV if it's not one of the requested outputs
         if "wav" not in [fmt.lower() for fmt in export_formats]:
             try:
                 os.remove(wav_output)
@@ -798,14 +779,6 @@ def process_text_for_tts(
                 print(f"[ERROR] Could not remove temp wav file: {e}")
 
     print(f"\033[1;36m[DEBUG] All generations complete. Outputs:\n\033[0m" + "\n".join(output_paths))
-    if 'whisper_model' in locals():
-        try:
-            del whisper_model
-            torch.cuda.empty_cache()
-            gc.collect()
-            print("\033[32m[DEBUG] Whisper model deleted and VRAM cache cleared.\033[0m")
-        except Exception as e:
-            print(f"\033[32m[DEBUG] Could not delete Whisper model: {e}\033[0m")
     return output_paths
 
 # ----- UI SECTION -----
@@ -913,9 +886,12 @@ In the Land of Mordor where the Shadows lie."""
                 )
 
                 output_audio = gr.Files(label="Download Final Audio File(s)")
+                audio_dropdown = gr.Dropdown(label="Click to Preview Any Generated File")
+                audio_preview = gr.Audio(label="Audio Preview", interactive=True)
+                audio_dropdown.change(fn=update_audio_preview, inputs=audio_dropdown, outputs=audio_preview)
 
         run_button.click(
-            fn=lambda *args: generate_batch_tts(
+            fn=lambda *args: generate_and_preview(
                 *args[:-6],
                 whisper_model_map[args[-6]],
                 args[-5],
@@ -948,7 +924,7 @@ In the Land of Mordor where the Shadows lie."""
                 sound_words_field,
                 separate_files_checkbox,
             ],
-            outputs=output_audio
+            outputs=[output_audio, audio_dropdown, audio_preview],
         )
         with gr.Accordion("Show Help / Instructions", open=False):
             gr.Markdown(
