@@ -21,6 +21,7 @@ import whisper
 import nltk
 
 from nltk.tokenize import sent_tokenize
+
 # Download both punkt and punkt_tab if missing
 try:
     nltk.data.find('tokenizers/punkt')
@@ -310,6 +311,7 @@ def process_one_chunk(
                 set_seed(candidate_seed)
                 try:
                     print(f"\033[32m[DEBUG] Generating candidate {cand_idx+1} attempt {attempt+1} for chunk {idx}...\033[0m")
+#                    print(f"[TTS DEBUG] audio_prompt_path passed: {audio_prompt_path_input!r}")
                     wav = model.generate(
                         sentence_group,
                         audio_prompt_path=audio_prompt_path_input,
@@ -318,6 +320,8 @@ def process_one_chunk(
                         cfg_weight=cfgw_input,
                         apply_watermark=not disable_watermark
                     )
+                    
+
                     candidate_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{cand_idx+1}_try{retry_attempt_number}_seed{candidate_seed}.wav"
                     torchaudio.save(candidate_path, wav, model.sr)
                     for _ in range(10):
@@ -376,6 +380,10 @@ def generate_batch_tts(
     generate_separate_audio_files: bool = False,
     sound_words_field: str = "",
 ) -> str:
+    print(f"[DEBUG] Received audio_prompt_path_input: {audio_prompt_path_input!r}")
+
+    if not audio_prompt_path_input or (isinstance(audio_prompt_path_input, str) and not os.path.isfile(audio_prompt_path_input)):
+        audio_prompt_path_input = None
     model = get_or_load_model()
 
     # PATCH: Get file basename (to prepend) if a text file was uploaded
@@ -558,144 +566,6 @@ def process_text_for_tts(
                     completed += 1
                     percent = int(100 * completed / total_chunks)
                     print(f"\033[36m[PROGRESS] Generated chunk {completed}/{total_chunks} ({percent}%)\033[0m")
-        else:
-            # -------- SEQUENTIAL CHUNK GENERATION & ADAPTIVE RETRY --------
-            total_chunks = len(sentence_groups)
-
-            # PATCH: Only load Whisper model ONCE per generation (if needed)
-            whisper_model = None
-            if not bypass_whisper_checking:
-                try:
-                    whisper_model = whisper.load_model(whisper_model_name)
-                    print(f"\033[32m[DEBUG] Whisper model loaded on device: {next(whisper_model.parameters()).device}\033[0m")
-                except Exception as e:
-                    print(f"[ERROR] Could not load Whisper model: {e}")
-                    whisper_model = None
-
-            for idx, sentence_group in enumerate(sentence_groups):
-                percent = int(100 * (idx + 1) / total_chunks)
-                print(f"\033[36m[PROGRESS] Generating chunk {idx+1}/{total_chunks} ({percent}%)\033[0m")
-                waveform = None
-                if not sentence_group.strip():
-                    print(f"\033[32m[DEBUG] Skipping empty sentence group at index {idx}\033[0m")
-                    chunk_candidate_map[idx] = []
-                    continue
-                if len(sentence_group) > 500:
-                    print(f"\033[32m[DEBUG] Skipping suspiciously long sentence group at index {idx} (len={len(sentence_group)})\033[0m")
-                    chunk_candidate_map[idx] = []
-                    continue
-                print(f"\033[32m[DEBUG] Processing group {idx}: len={len(sentence_group)}: \033[33m{sentence_group}\033[0m")
-                passed_candidates = []
-                failed_candidates = []
-                failed_tries_with_scores = []
-
-                for cand_idx in range(num_candidates_per_chunk):
-                    passed = False
-                    best_failed_score = -1.0
-                    best_failed_try = None
-
-                    for attempt in range(max_attempts_per_candidate):
-                        if cand_idx == 0 and attempt == 0:
-                            candidate_seed = this_seed
-                        else:
-                            candidate_seed = random.randint(1, 2**32-1)
-                        set_seed(candidate_seed)
-                        try:
-                            print(f"\033[32m[DEBUG] Generating candidate {cand_idx+1} attempt {attempt+1} for chunk {idx}...\033[0m")
-                            wav = model.generate(
-                                sentence_group,
-                                audio_prompt_path=audio_prompt_path_input,
-                                exaggeration=min(exaggeration_input, 1.0),
-                                temperature=temperature_input,
-                                cfg_weight=cfgw_input,
-                                apply_watermark=not disable_watermark
-                            )
-                            candidate_path = f"temp/gen{gen_index+1}_chunk_{idx:03d}_cand_{cand_idx+1}_try{attempt+1}_seed{candidate_seed}.wav"
-                            torchaudio.save(candidate_path, wav, model.sr)
-                            for _ in range(10):
-                                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 1024:
-                                    break
-                                time.sleep(0.05)
-                            duration = get_wav_duration(candidate_path)
-                            print(f"\033[32m[DEBUG] Saved candidate {cand_idx+1}, attempt {attempt+1}, duration={duration:.3f}s: {candidate_path}\033[0m")
-
-                            if bypass_whisper_checking:
-                                print(f"\033[32m[DEBUG] Bypass: candidate {cand_idx+1}, duration={duration:.3f}s\033[0m")
-                                passed_candidates.append((duration, candidate_path))
-                                passed = True
-                                break
-                            else:
-                                try:
-                                    # PATCH: Use already-loaded whisper_model
-                                    result = whisper_model.transcribe(candidate_path)
-                                    transcribed = result['text'].strip().lower()
-                                except Exception as e:
-                                    print(f"[ERROR] Whisper transcription failed: {e}")
-                                    transcribed = ""
-                                print(f"\033[32m[DEBUG] Whisper transcription (cand {cand_idx+1}, attempt {attempt+1}): {transcribed!r}\033[0m")
-                                print(f"\033[32m[DEBUG] Target sentence: {sentence_group.strip().lower()!r}\033[0m")
-                                score = difflib.SequenceMatcher(
-                                    None,
-                                    normalize_for_compare_all_punct(transcribed),
-                                    normalize_for_compare_all_punct(sentence_group.strip().lower())
-                                ).ratio()
-                                if score >= 0.95:
-                                    print(f"\033[32m[DEBUG] Candidate {cand_idx+1} \033[1;33m PASSED Whisper check, duration={duration:.3f}s\033[0m")
-                                    passed_candidates.append((duration, candidate_path))
-                                    passed = True
-                                    break
-                                else:
-                                    print(f"\033[33m[WARN] Candidate {cand_idx+1}, attempt {attempt+1} FAILED Whisper check (score={score:.3f})\033[0m")
-                                    if score > best_failed_score or (score == best_failed_score and (best_failed_try is None or duration < best_failed_try[0])):
-                                        best_failed_score = score
-                                        best_failed_try = (duration, candidate_path, score, transcribed)
-
-                        except Exception as e:
-                            print(f"[ERROR] Candidate {cand_idx+1} generation attempt {attempt+1} failed: {e}")
-
-                    if not passed and best_failed_try is not None:
-                        # Append all tries for later fallback selection
-                        failed_tries_with_scores.append(best_failed_try)
-
-
-                # Select candidate logic
-                selected = None
-                if passed_candidates:
-                    best_path = sorted(passed_candidates, key=lambda x: x[0])[0][1]
-                    print(f"\033[32m[DEBUG] Selected {best_path} as best candidate for group {idx} \033[1;33m(PASSED Whisper check)\033[0m")
-                    waveform, sr = torchaudio.load(best_path)
-                    selected = waveform
-                elif failed_tries_with_scores:
-                    # PATCH: fallback selection logic for failed candidates
-                    if use_longest_transcript_on_fail:
-                        # Find the tuple with the longest transcript (which must be added to the tuple!)
-                        # Let's assume best_failed_try is: (duration, candidate_path, score, transcript)
-                        best_failed = max(failed_tries_with_scores, key=lambda x: len(x[3]) if len(x) > 3 else 0)
-                        best_path = best_failed[1]
-                        print(f"\033[33m[WARNING] No candidate passed for group {idx}. Using failed candidate with longest transcript: \033[33m{best_path} (len={len(best_failed[3]) if len(best_failed) > 3 else 'unknown'})\033[0m")
-                    else:
-                        # Sort by highest fuzzy score
-                        failed_tries_with_scores.sort(key=lambda x: (-x[2], x[0]))
-                        best_path = failed_tries_with_scores[0][1]
-                        print(f"\033[33m[WARNING] No candidate passed for group {idx}. Using failed candidate with highest fuzzy match score: {best_path}\033[0m")
-                    try:
-                        waveform, sr = torchaudio.load(best_path)
-                        selected = waveform
-                    except Exception as e:
-                        print(f"[ERROR] Could not load fallback: {e}")
-
-                else:
-                    print(f"[ERROR] No candidates were generated for group {idx}.")
-                chunk_candidate_map[idx] = [{'waveform': selected}] if selected is not None else []
-
-            # PATCH: Unload Whisper model (VRAM) after this generation
-            if whisper_model is not None:
-                del whisper_model
-                torch.cuda.empty_cache()
-                gc.collect()
-                print("\033[32m[DEBUG] Whisper model deleted and VRAM cache cleared after generation.\033[0m")
-
-        waveform_list = []
 
         if enable_parallel:
             if not bypass_whisper_checking:
@@ -836,6 +706,7 @@ def process_text_for_tts(
 
 
             else:
+                waveform_list = []  # <--- ADD THIS LINE
                 # Bypass Whisper: just pick shortest duration per chunk, IN CORRECT ORDER
                 for chunk_idx in sorted(chunk_candidate_map.keys()):
                     candidates = chunk_candidate_map[chunk_idx]
@@ -844,14 +715,6 @@ def process_text_for_tts(
                         print(f"\033[32m[DEBUG] [Bypass Whisper] Selected {best['path']} as shortest candidate for chunk {chunk_idx}\033[0m")
                         waveform, sr = torchaudio.load(best['path'])
                         waveform_list.append(waveform)
-
-
-        else:
-            # Sequential: waveform_list is already filled in during chunk processing
-            for idx in sorted(chunk_candidate_map.keys()):
-                cands = chunk_candidate_map[idx]
-                if cands and 'waveform' in cands[0]:
-                    waveform_list.append(cands[0]['waveform'])
 
         if not waveform_list:
             print(f"\033[33m[WARNING] No audio generated in generation {gen_index+1}\033[0m")
@@ -966,48 +829,28 @@ def main():
         gr.Markdown("# 🎧 Chatterbox TTS Extended")
         with gr.Row():
             with gr.Column():
-                text_input = gr.Textbox(label="Text Input", lines=6)
+                text_input = gr.Textbox(label="Text Input", lines=6, value="""Three Rings for the Elven-kings under the sky,
+
+Seven for the Dwarf-lords in their halls of stone,
+
+Nine for Mortal Men doomed to die,
+
+One for the Dark Lord on his dark throne
+
+In the Land of Mordor where the Shadows lie.
+
+One Ring to rule them all, One Ring to find them,
+
+One Ring to bring them all and in the darkness bind them
+
+In the Land of Mordor where the Shadows lie."""
+)
                 text_file_input = gr.File(label="Text File(s) (.txt)", file_types=[".txt"], file_count="multiple")
                 separate_files_checkbox = gr.Checkbox(label="Generate separate audio files per text file", value=False)
                 ref_audio_input = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Reference Audio (Optional)")
-                exaggeration_slider = gr.Slider(0.0, 2.0, value=0.5, step=0.1, label="Emotion Exaggeration")
-                cfg_weight_slider = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="CFG Weight")
-                temp_slider = gr.Slider(0.01, 5.0, value=0.75, step=0.05, label="Temperature")
-                seed_input = gr.Number(value=0, label="Random Seed (0 for random)")
-                enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=False)
-                smart_batch_short_sentences_checkbox = gr.Checkbox(label="Smart-append short sentences (if batching is off)", value=True)
-                to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=True)
-                normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=True)
-                fix_dot_letters_checkbox = gr.Checkbox(label="Convert 'J.R.R.' style input to 'J R R'", value=True)
-
-                sound_words_field = gr.Textbox(
-                    label="Remove/Replace Words/Sounds (comma/newline separated or 'sound=>replacement')",
-                    lines=2,
-                    info="Examples: sss, ss, ahh=>um, hmm (removes/replace as standalone or quoted; not in words)"
-                )
-
-                use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=False)
-                keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=False)
-                threshold_slider = gr.Slider(0.01, 0.5, value=0.06, step=0.01, label="Auto-Editor Volume Threshold")
-                margin_slider = gr.Slider(0.0, 2.0, value=0.2, step=0.1, label="Auto-Editor Margin (seconds)")
-
-                normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=False)
-                normalize_method_dropdown = gr.Dropdown(
-                    choices=["ebu", "peak"], value="ebu", label="Normalization Method"
-                )
-                normalize_level_slider = gr.Slider(
-                    -70, -5, value=-24, step=1, label="EBU Target Integrated Loudness (I, dB, ebu only)"
-                )
-                normalize_tp_slider = gr.Slider(
-                    -9, 0, value=-2, step=1, label="EBU True Peak (TP, dB, ebu only)"
-                )
-                normalize_lra_slider = gr.Slider(
-                    1, 50, value=7, step=1, label="EBU Loudness Range (LRA, ebu only)"
-                )
-
                 export_format_checkboxes = gr.CheckboxGroup(
                     choices=["wav", "mp3", "flac"],
-                    value=["flac"],  # default selection
+                    value=["flac", "mp3"],  # default selection
                     label="Export Format(s): Select one or more"
                 )
                 disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=True)
@@ -1033,172 +876,43 @@ def main():
 
                 run_button = gr.Button("Generate")
             with gr.Column():
-                output_audio = gr.Files(label="Download Final Audio File(s)")
-                gr.Markdown(
-                """
-                **What do all the main sliders and settings do?**
-                ---
+                exaggeration_slider = gr.Slider(0.0, 2.0, value=0.5, step=0.1, label="Emotion Exaggeration")
+                cfg_weight_slider = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="CFG Weight")
+                temp_slider = gr.Slider(0.01, 5.0, value=0.75, step=0.05, label="Temperature")
+                seed_input = gr.Number(value=0, label="Random Seed (0 for random)")
+                enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=False)
+                smart_batch_short_sentences_checkbox = gr.Checkbox(label="Smart-append short sentences (if batching is off)", value=True)
+                to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=True)
+                normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=True)
+                fix_dot_letters_checkbox = gr.Checkbox(label="Convert 'J.R.R.' style input to 'J R R'", value=True)
+                
+                use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=False)
+                keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=False)
+                threshold_slider = gr.Slider(0.01, 0.5, value=0.06, step=0.01, label="Auto-Editor Volume Threshold")
+                margin_slider = gr.Slider(0.0, 2.0, value=0.2, step=0.1, label="Auto-Editor Margin (seconds)")
 
-                ### **Text & Reference Input**
-                - **Text Input:**  
-                  Enter the text you want to convert to speech. This can be any length, but for best results, keep sentences concise.  
-                - **Text File(s) (.txt):**  
-                  Upload one or more plain text files. If files are uploaded, their contents override the text box input.  
-                  - *Tip: You can drag-and-drop multiple `.txt` files. If you do, you can choose to generate either one combined audio file, or separate audio files for each text file (see below).*
-                - **Generate Separate Audio Files Per Text File:**  
-                  If checked, each uploaded text file will result in a separate audio file.  
-                  If unchecked, all text files are merged (in alphabetical order) and a single audio file is generated.
-                - **Reference Audio:**  
-                  (Optional) Upload or record a sample of the target voice or style. The model will attempt to mimic this reference in generated speech.
-
-                ---
-
-                ### **TTS Voice/Emotion Controls**
-                - **Emotion Exaggeration:**  
-                  Controls how dramatically emotions (like excitement, sadness, etc.) are expressed.  
-                  - *Low values* = more monotone/neutral  
-                  - *1.0* = model's default expressiveness  
-                  - *Above 1.0* = extra dramatic
-                - **CFG Weight (Classifier-Free Guidance):**  
-                  Governs how strictly the output should follow the input text vs. being natural and expressive.  
-                  - *Higher values* = more literal, less expressive  
-                  - *Lower values* = more natural, possibly less faithful to the input
-                - **Temperature:**  
-                  Adds randomness/variety to speech.  
-                  - *Low (0.1–0.5)* = more predictable, less expressive  
-                  - *High (0.7–1.2)* = more variety and unpredictability in speech patterns
-
-                - **Random Seed (0 for random):**  
-                  Sets the base for the random number generator.  
-                  - *0* = pick a new random seed each time (unique results)  
-                  - *Any other number* = repeatable generations (for reproducibility/debugging)
-
-                ---
-
-                ### **Text Processing Options**
-                - **Enable Sentence Batching (Max 400 chars):**  
-                  Chunks the input into groups of sentences, up to the specified maximum character length per batch.  
-                  - *Improves natural phrasing and makes TTS more efficient.*
-                - **Smart-Append Short Sentences (if batching is off):**  
-                  If sentence batching is disabled, this option intelligently merges very short sentences together for smoother prosody.
-                - **Convert Input Text to Lowercase:**  
-                  Automatically lowercases the input before synthesis.  
-                  - *May improve consistency in pronunciation for some models.*
-                - **Normalize Spacing:**  
-                  Removes redundant spaces and blank lines, creating cleaner input for the model.
-                - **Convert 'J.R.R.' to 'J R R':**  
-                  Automatically converts abbreviations written with periods to a spaced-out format (improves pronunciation of initials/names).
-
-                ---
-
-                ### **Audio Post-Processing**
-                - **Post-process with Auto-Editor:**  
-                  Uses [auto-editor](https://github.com/WyattBlue/auto-editor) to automatically trim silences and clean up the audio, reducing stutters and small TTS artifacts.
-                - **Auto-Editor Volume Threshold:**  
-                  Sets the loudness level below which audio is considered silence and removed.  
-                  - *Higher values = more aggressive trimming.*
-                - **Auto-Editor Margin (seconds):**  
-                  Adds a buffer before and after detected audio to avoid cutting words or breaths.
-                - **Keep Original WAV (before Auto-Editor):**  
-                  If enabled, the unprocessed audio is also saved, alongside the cleaned-up version.
-                - **Normalize with ffmpeg (loudness/peak):**  
-                  Uses `ffmpeg` to adjust output volume.  
-                  - *Loudness normalization* matches the volume across different audio files.  
-                  - *Peak normalization* ensures audio doesn't exceed a certain volume.
-                - **Normalization Method:**  
-                  - *ebu*: Broadcast-standard loudness normalization (good for consistent perceived loudness).  
-                  - *peak*: Simple normalization so the loudest part is at a fixed level.
-                - **EBU Target Integrated Loudness (I, dB, ebu only):**  
-                  Target average loudness in decibels (usually -24 dB for TV, -16 dB for podcasts).
-                - **EBU True Peak (TP, dB, ebu only):**  
-                  Maximum peak volume in dB (e.g., -2 dB to avoid digital clipping).
-                - **EBU Loudness Range (LRA, ebu only):**  
-                  Controls the dynamic range of the output.  
-                  - *Lower values* = more compressed sound; *higher values* = more dynamic range.
-
-                ---
-
-                ### **Output & Export Options**
-                - **Export Format:**  
-                  Choose one or more audio formats for export:  
-                  - *WAV*: Uncompressed, highest quality  
-                  - *MP3*: Compressed, smaller files, near-universal support  
-                  - *FLAC*: Lossless compression, smaller than WAV but no loss in quality  
-                  - *Tip: You can select multiple formats to export all at once.*
-                - **Disable Perth Watermark:**  
-                  If enabled, disables the PerthNet audio watermarking (if the model applies it by default).  
-                  - *Recommended for privacy or when watermarking is not needed.*
-
-                ---
-
-                ### **Generation Controls**
-                - **Number of Generations:**  
-                  Produces multiple unique audio outputs in one click (for variety or "takes").  
-                  - *All generations will have different random seeds (unless a fixed seed is set).*
-                - **Number of Candidates Per Chunk:**  
-                  For each chunk, generate this many TTS variants and pick the best one (based on Whisper check or duration).  
-                  - *More candidates can reduce artifacts, but increases processing time and VRAM use.*
-                - **Max Attempts Per Candidate (Whisper check retries):**  
-                  How many times to retry each candidate if the Whisper sync check fails.  
-                  - Will keep trying new variations up to this number per candidate when failing Whisper Sync validation.  
-                - **Bypass Whisper Checking:**  
-                  If enabled, skips speech-to-text validation (faster but riskier—may allow more TTS mistakes).  
-                  - *When off, each candidate is checked using Whisper for accuracy.*
-
-                ---
-
-                ### **Whisper Sync Options**
-                - **Whisper Sync Model (with VRAM requirements):**  
-                  Select the OpenAI Whisper model used for speech-to-text validation.  
-                  - *tiny/medium/large* differ in accuracy, speed, and VRAM use.
-                  - *medium* (~5–8 GB VRAM) is a recommended compromise.
-
-                ---
-
-                ### **Parallel Processing & Performance**
-                - **Enable Parallel Chunk Processing:**  
-                  Speeds up synthesis by generating multiple audio chunks at the same time.  
-                  - *Uses more VRAM; can speed up batch synthesis a lot on powerful GPUs.*
-                - **Parallel Workers:**  
-                  How many chunks to process in parallel.  
-                  - *Set to 1 for full sequential processing (lower VRAM, slower).*
-                  - *Higher = more speed, but may hit VRAM limits on consumer GPUs.*
-
-                ---
-
-                ### **How Candidate Selection Works**
-                - For each chunk, the model creates the specified number of candidate audio variations.
-                - If Whisper checking is enabled:  
-                  - Each candidate is transcribed, and the one with the closest match to the input text is chosen.
-                - If Whisper is bypassed:  
-                  - The shortest-duration candidate is chosen (assumed best).
-                - If all candidates fail validation after retries:  
-                  - The candidate with the highest Whisper score is used, or the one with the most text characters, depending on user settings.
-
-                ---
-
-                ### **Sound Words / Replacement (Advanced)**
-                - **Sound Word List:**  
-                  (Advanced) Supply a list of word replacements in the provided format to automatically substitute or remove problematic words during synthesis.
-                  - *Format: "original=>replacement, nextword=>newword"*  
-                  - Can be used to fix tricky pronunciations or remove unwanted sound cues from the text.
-
-                ---
-
-                ### **Tips & Troubleshooting**
-                - If you experience **slow Whisper checking or VRAM errors**, try:
-                  - Reducing the number of parallel workers
-                  - Switching to a smaller Whisper model
-                  - Reducing the number of candidates per chunk
-                - If audio sounds choppy or cut off, try **raising the Auto-Editor margin**, or lowering the volume threshold.
-
-                ---
-
-                **Still have questions?**  
-                This interface aims to expose every option for maximum control, but if you’re unsure, try using defaults for most sliders and options.
-                """
-
+                normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=False)
+                normalize_method_dropdown = gr.Dropdown(
+                    choices=["ebu", "peak"], value="ebu", label="Normalization Method"
                 )
+                normalize_level_slider = gr.Slider(
+                    -70, -5, value=-24, step=1, label="EBU Target Integrated Loudness (I, dB, ebu only)"
+                )
+                normalize_tp_slider = gr.Slider(
+                    -9, 0, value=-2, step=1, label="EBU True Peak (TP, dB, ebu only)"
+                )
+                normalize_lra_slider = gr.Slider(
+                    1, 50, value=7, step=1, label="EBU Loudness Range (LRA, ebu only)"
+                )
+
+
+                sound_words_field = gr.Textbox(
+                    label="Remove/Replace Words/Sounds (comma/newline separated or 'sound=>replacement')",
+                    lines=2,
+                    info="Examples: sss, ss, ahh=>um, hmm (removes/replace as standalone or quoted; not in words)"
+                )
+
+                output_audio = gr.Files(label="Download Final Audio File(s)")
 
         run_button.click(
             fn=lambda *args: generate_batch_tts(
@@ -1236,7 +950,173 @@ def main():
             ],
             outputs=output_audio
         )
+        with gr.Accordion("Show Help / Instructions", open=False):
+            gr.Markdown(
+            """
+            **What do all the main sliders and settings do?**
+            ---
 
+            ### **Text & Reference Input**
+            - **Text Input:**  
+              Enter the text you want to convert to speech. This can be any length, but for best results, keep sentences concise.  
+            - **Text File(s) (.txt):**  
+              Upload one or more plain text files. If files are uploaded, their contents override the text box input.  
+              - *Tip: You can drag-and-drop multiple `.txt` files. If you do, you can choose to generate either one combined audio file, or separate audio files for each text file (see below).*
+            - **Generate Separate Audio Files Per Text File:**  
+              If checked, each uploaded text file will result in a separate audio file.  
+              If unchecked, all text files are merged (in alphabetical order) and a single audio file is generated.
+            - **Reference Audio:**  
+              (Optional) Upload or record a sample of the target voice or style. The model will attempt to mimic this reference in generated speech.
+
+            ---
+
+            ### **TTS Voice/Emotion Controls**
+            - **Emotion Exaggeration:**  
+              Controls how dramatically emotions (like excitement, sadness, etc.) are expressed.  
+              - *Low values* = more monotone/neutral  
+              - *1.0* = model's default expressiveness  
+              - *Above 1.0* = extra dramatic
+            - **CFG Weight (Classifier-Free Guidance):**  
+              Governs how strictly the output should follow the input text vs. being natural and expressive.  
+              - *Higher values* = more literal, less expressive  
+              - *Lower values* = more natural, possibly less faithful to the input
+            - **Temperature:**  
+              Adds randomness/variety to speech.  
+              - *Low (0.1–0.5)* = more predictable, less expressive  
+              - *High (0.7–1.2)* = more variety and unpredictability in speech patterns
+
+            - **Random Seed (0 for random):**  
+              Sets the base for the random number generator.  
+              - *0* = pick a new random seed each time (unique results)  
+              - *Any other number* = repeatable generations (for reproducibility/debugging)
+
+            ---
+
+            ### **Text Processing Options**
+            - **Enable Sentence Batching (Max 400 chars):**  
+              Chunks the input into groups of sentences, up to the specified maximum character length per batch.  
+              - *Improves natural phrasing and makes TTS more efficient.*
+            - **Smart-Append Short Sentences (if batching is off):**  
+              If sentence batching is disabled, this option intelligently merges very short sentences together for smoother prosody.
+            - **Convert Input Text to Lowercase:**  
+              Automatically lowercases the input before synthesis.  
+              - *May improve consistency in pronunciation for some models.*
+            - **Normalize Spacing:**  
+              Removes redundant spaces and blank lines, creating cleaner input for the model.
+            - **Convert 'J.R.R.' to 'J R R':**  
+              Automatically converts abbreviations written with periods to a spaced-out format (improves pronunciation of initials/names).
+
+            ---
+
+            ### **Audio Post-Processing**
+            - **Post-process with Auto-Editor:**  
+              Uses [auto-editor](https://github.com/WyattBlue/auto-editor) to automatically trim silences and clean up the audio, reducing stutters and small TTS artifacts.
+            - **Auto-Editor Volume Threshold:**  
+              Sets the loudness level below which audio is considered silence and removed.  
+              - *Higher values = more aggressive trimming.*
+            - **Auto-Editor Margin (seconds):**  
+              Adds a buffer before and after detected audio to avoid cutting words or breaths.
+            - **Keep Original WAV (before Auto-Editor):**  
+              If enabled, the unprocessed audio is also saved, alongside the cleaned-up version.
+            - **Normalize with ffmpeg (loudness/peak):**  
+              Uses `ffmpeg` to adjust output volume.  
+              - *Loudness normalization* matches the volume across different audio files.  
+              - *Peak normalization* ensures audio doesn't exceed a certain volume.
+            - **Normalization Method:**  
+              - *ebu*: Broadcast-standard loudness normalization (good for consistent perceived loudness).  
+              - *peak*: Simple normalization so the loudest part is at a fixed level.
+            - **EBU Target Integrated Loudness (I, dB, ebu only):**  
+              Target average loudness in decibels (usually -24 dB for TV, -16 dB for podcasts).
+            - **EBU True Peak (TP, dB, ebu only):**  
+              Maximum peak volume in dB (e.g., -2 dB to avoid digital clipping).
+            - **EBU Loudness Range (LRA, ebu only):**  
+              Controls the dynamic range of the output.  
+              - *Lower values* = more compressed sound; *higher values* = more dynamic range.
+
+            ---
+
+            ### **Output & Export Options**
+            - **Export Format:**  
+              Choose one or more audio formats for export:  
+              - *WAV*: Uncompressed, highest quality  
+              - *MP3*: Compressed, smaller files, near-universal support  
+              - *FLAC*: Lossless compression, smaller than WAV but no loss in quality  
+              - *Tip: You can select multiple formats to export all at once.*
+            - **Disable Perth Watermark:**  
+              If enabled, disables the PerthNet audio watermarking (if the model applies it by default).  
+              - *Recommended for privacy or when watermarking is not needed.*
+
+            ---
+
+            ### **Generation Controls**
+            - **Number of Generations:**  
+              Produces multiple unique audio outputs in one click (for variety or "takes").  
+              - *All generations will have different random seeds (unless a fixed seed is set).*
+            - **Number of Candidates Per Chunk:**  
+              For each chunk, generate this many TTS variants and pick the best one (based on Whisper check or duration).  
+              - *More candidates can reduce artifacts, but increases processing time and VRAM use.*
+            - **Max Attempts Per Candidate (Whisper check retries):**  
+              How many times to retry each candidate if the Whisper sync check fails.  
+              - Will keep trying new variations up to this number per candidate when failing Whisper Sync validation.  
+            - **Bypass Whisper Checking:**  
+              If enabled, skips speech-to-text validation (faster but riskier—may allow more TTS mistakes).  
+              - *When off, each candidate is checked using Whisper for accuracy.*
+
+            ---
+
+            ### **Whisper Sync Options**
+            - **Whisper Sync Model (with VRAM requirements):**  
+              Select the OpenAI Whisper model used for speech-to-text validation.  
+              - *tiny/medium/large* differ in accuracy, speed, and VRAM use.
+              - *medium* (~5–8 GB VRAM) is a recommended compromise.
+
+            ---
+
+            ### **Parallel Processing & Performance**
+            - **Enable Parallel Chunk Processing:**  
+              Speeds up synthesis by generating multiple audio chunks at the same time.  
+              - *Uses more VRAM; can speed up batch synthesis a lot on powerful GPUs.*
+            - **Parallel Workers:**  
+              How many chunks to process in parallel.  
+              - *Set to 1 for full sequential processing (lower VRAM, slower).*
+              - *Higher = more speed, but may hit VRAM limits on consumer GPUs.*
+
+            ---
+
+            ### **How Candidate Selection Works**
+            - For each chunk, the model creates the specified number of candidate audio variations.
+            - If Whisper checking is enabled:  
+              - Each candidate is transcribed, and the one with the closest match to the input text is chosen.
+            - If Whisper is bypassed:  
+              - The shortest-duration candidate is chosen (assumed best).
+            - If all candidates fail validation after retries:  
+              - The candidate with the highest Whisper score is used, or the one with the most text characters, depending on user settings.
+
+            ---
+
+            ### **Sound Words / Replacement (Advanced)**
+            - **Sound Word List:**  
+              (Advanced) Supply a list of word replacements in the provided format to automatically substitute or remove problematic words during synthesis.
+              - *Format: "original=>replacement, nextword=>newword"*  
+              - Can be used to fix tricky pronunciations or remove unwanted sound cues from the text.
+
+            ---
+
+            ### **Tips & Troubleshooting**
+            - If you experience **slow Whisper checking or VRAM errors**, try:
+              - Reducing the number of parallel workers
+              - Switching to a smaller Whisper model
+              - Reducing the number of candidates per chunk
+            - If audio sounds choppy or cut off, try **raising the Auto-Editor margin**, or lowering the volume threshold.
+
+            ---
+
+            **Still have questions?**  
+            This interface aims to expose every option for maximum control, but if you’re unsure, try using defaults for most sliders and options.
+            """,
+            elem_classes=["gr-text-center"]
+
+            )
 
         demo.launch()
 if __name__ == "__main__":
