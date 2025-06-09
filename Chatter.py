@@ -20,7 +20,81 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import whisper
 import nltk
 from nltk.tokenize import sent_tokenize
+from faster_whisper import WhisperModel as FasterWhisperModel
+import json
+SETTINGS_PATH = "settings.json"
 
+def load_settings():
+    if os.path.exists(SETTINGS_PATH):
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+                d = default_settings()
+                d.update(data)
+                return d
+            except Exception:
+                return default_settings()
+    else:
+        return default_settings()
+
+def save_settings(mapping):
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(mapping, f, indent=2)
+        
+        
+
+
+def default_settings():
+    return {
+        "text_input": """Three Rings for the Elven-kings under the sky,
+
+Seven for the Dwarf-lords in their halls of stone,
+
+Nine for Mortal Men doomed to die,
+
+One for the Dark Lord on his dark throne
+
+In the Land of Mordor where the Shadows lie.
+
+One Ring to rule them all, One Ring to find them,
+
+One Ring to bring them all and in the darkness bind them
+
+In the Land of Mordor where the Shadows lie.""",
+        "separate_files_checkbox": False,
+        "export_format_checkboxes": ["flac", "mp3"],
+        "disable_watermark_checkbox": True,
+        "num_generations_input": 1,
+        "num_candidates_slider": 3,
+        "max_attempts_slider": 3,
+        "bypass_whisper_checkbox": False,
+        "whisper_model_dropdown": "medium (~5–8 GB OpenAI / ~2.5–4.5 GB faster-whisper)",
+        "use_faster_whisper_checkbox": True,
+        "enable_parallel_checkbox": True,
+        "use_longest_transcript_on_fail_checkbox": True,
+        "num_parallel_workers_slider": 4,
+        "exaggeration_slider": 0.5,
+        "cfg_weight_slider": 1.0,
+        "temp_slider": 0.75,
+        "seed_input": 0,
+        "enable_batching_checkbox": False,
+        "smart_batch_short_sentences_checkbox": True,
+        "to_lowercase_checkbox": True,
+        "normalize_spacing_checkbox": True,
+        "fix_dot_letters_checkbox": True,
+        "use_auto_editor_checkbox": False,
+        "keep_original_checkbox": False,
+        "threshold_slider": 0.06,
+        "margin_slider": 0.2,
+        "normalize_audio_checkbox": False,
+        "normalize_method_dropdown": "ebu",
+        "normalize_level_slider": -24,
+        "normalize_tp_slider": -2,
+        "normalize_lra_slider": 7,
+        "sound_words_field": "",
+    }
+        
+settings = load_settings()        
 # Download both punkt and punkt_tab if missing
 try:
     nltk.data.find('tokenizers/punkt')
@@ -36,6 +110,15 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🚀 Running on device: {DEVICE}")
 
 MODEL = None
+
+def load_whisper_backend(model_name, use_faster_whisper, device):
+    if use_faster_whisper:
+        print(f"[DEBUG] Loading faster-whisper model: {model_name}")
+        return FasterWhisperModel(model_name, device=device, compute_type="float16" if device=="cuda" else "float32")
+    else:
+        import whisper
+        print(f"[DEBUG] Loading openai-whisper model: {model_name}")
+        return whisper.load_model(model_name, device=device)
 
 def get_or_load_model():
     global MODEL
@@ -248,12 +331,11 @@ def smart_remove_sound_words(text, sound_words):
     text = re.sub(r',+\s*([\.!\?])', r'\1', text)
     return text.strip()
 
-def whisper_check_mp(candidate_path, target_text, whisper_model):
+def whisper_check_mp(candidate_path, target_text, whisper_model, use_faster_whisper=False):
     import difflib
     import re
     import string
     import os
-    import torch
 
     def normalize_for_compare_all_punct(text):
         text = re.sub(r'[–—-]', ' ', text)
@@ -262,20 +344,23 @@ def whisper_check_mp(candidate_path, target_text, whisper_model):
         return text.lower().strip()
 
     try:
-        print(f"\033[32m[DEBUG] [MPID={os.getpid()}] Whisper checking: {candidate_path}\033[0m")
-        print(f"\033[32m[DEBUG] Whisper model in process {os.getpid()} on device: {next(whisper_model.parameters()).device}\033[0m")
-        result = whisper_model.transcribe(candidate_path)
-        transcribed = result['text'].strip().lower()
-        print(f"\033[32m[DEBUG] [MPID={os.getpid()}] Whisper transcription: '\033[33m{transcribed}' for candidate '{os.path.basename(candidate_path)}'\033[0m")
+        print(f"\033[32m[DEBUG] Whisper checking: {candidate_path}\033[0m")
+        if use_faster_whisper:
+            segments, info = whisper_model.transcribe(candidate_path)
+            transcribed = "".join([seg.text for seg in segments]).strip().lower()
+        else:
+            result = whisper_model.transcribe(candidate_path)
+            transcribed = result['text'].strip().lower()
+        print(f"\033[32m[DEBUG] Whisper transcription: '\033[33m{transcribed}' for candidate '{os.path.basename(candidate_path)}'\033[0m")
         score = difflib.SequenceMatcher(
             None,
             normalize_for_compare_all_punct(transcribed),
             normalize_for_compare_all_punct(target_text.strip().lower())
         ).ratio()
-        print(f"\033[32m[DEBUG] [MPID={os.getpid()}] Score: {score:.3f} (target: '\033[33m{target_text}')\033[0m")
+        print(f"\033[32m[DEBUG] Score: {score:.3f} (target: '\033[33m{target_text}')\033[0m")
         return (candidate_path, score, transcribed)
     except Exception as e:
-        print(f"[ERROR] [MPID={os.getpid()}] Whisper transcription failed for {candidate_path}: {e}")
+        print(f"[ERROR] Whisper transcription failed for {candidate_path}: {e}")
         return (candidate_path, 0.0, f"ERROR: {e}")
         
         
@@ -339,13 +424,16 @@ def process_one_chunk(
     return (idx, candidates)
 
 def generate_and_preview(*args):
+
     output_paths = generate_batch_tts(*args)
     audio_files = [p for p in output_paths if os.path.splitext(p)[1].lower() in [".wav", ".mp3", ".flac"]]
     dropdown_value = audio_files[0] if audio_files else None
     return output_paths, gr.Dropdown(choices=audio_files, value=dropdown_value), dropdown_value
+    
 
 def update_audio_preview(selected_path):
     return selected_path
+
     
 @spaces.GPU
 def generate_batch_tts(
@@ -359,7 +447,7 @@ def generate_batch_tts(
     use_auto_editor: bool,
     ae_threshold: float,
     ae_margin: float,
-    export_formats: list,   # expects a list like ['mp3', 'flac']
+    export_formats: list,
     enable_batching: bool,
     to_lowercase: bool,
     normalize_spacing: bool,
@@ -380,8 +468,9 @@ def generate_batch_tts(
     enable_parallel: bool = True,
     num_parallel_workers: int = 4,
     use_longest_transcript_on_fail: bool = False,
-    generate_separate_audio_files: bool = False,
     sound_words_field: str = "",
+    use_faster_whisper: bool = False,
+    generate_separate_audio_files: bool = False,
 ) -> str:
     print(f"[DEBUG] Received audio_prompt_path_input: {audio_prompt_path_input!r}")
 
@@ -391,10 +480,18 @@ def generate_batch_tts(
 
     # PATCH: Get file basename (to prepend) if a text file was uploaded
     # Support for multiple file uploads
+    # PATCH: Get file basename (to prepend) if a text file was uploaded
+    # Support for multiple file uploads
     input_basename = ""
-    if text_file is not None:
+
+    # Robust handling for Gradio's file input (can be None, False, or list containing such)
+    files = []
+    if text_file:
         files = text_file if isinstance(text_file, list) else [text_file]
-        files = sorted(files, key=lambda x: x.name if hasattr(x, "name") else str(x))
+        # Remove any entry that's not a file-like object with a .name attribute (filters out None, False, bool)
+        files = [f for f in files if hasattr(f, "name") and isinstance(getattr(f, "name", None), str)]
+
+    if files:
         # If generating separate audio files per text file:
         if generate_separate_audio_files:
             all_jobs = []
@@ -407,12 +504,12 @@ def generate_batch_tts(
                         file_text = f.read()
                     all_jobs.append((file_text, base))
                 except Exception as e:
-                    print(f"[ERROR] Failed to read file: {fobj.name} | {e}")
+                    print(f"[ERROR] Failed to read file: {getattr(fobj, 'name', repr(fobj))} | {e}")
             # Now process each file separately and collect outputs
             all_outputs = []
             for job_text, base in all_jobs:
                 output_paths = process_text_for_tts(
-                    job_text, base, # plus all your other TTS params!
+                    job_text, base,
                     audio_prompt_path_input,
                     exaggeration_input, temperature_input, seed_num_input, cfgw_input,
                     use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
@@ -421,7 +518,7 @@ def generate_batch_tts(
                     normalize_audio, normalize_method, normalize_level, normalize_tp,
                     normalize_lra, num_candidates_per_chunk, max_attempts_per_candidate,
                     bypass_whisper_checking, whisper_model_name, enable_parallel,
-                    num_parallel_workers, use_longest_transcript_on_fail, sound_words_field
+                    num_parallel_workers, use_longest_transcript_on_fail, sound_words_field, use_faster_whisper
                 )
                 all_outputs.extend(output_paths)
             return all_outputs  # Return list of output files
@@ -438,22 +535,21 @@ def generate_batch_tts(
                 with open(fobj.name, "r", encoding="utf-8") as f:
                     all_text.append(f.read())
             except Exception as e:
-                print(f"[ERROR] Failed to read file: {fobj.name} | {e}")
+                print(f"[ERROR] Failed to read file: {getattr(fobj, 'name', repr(fobj))} | {e}")
         text = "\n\n".join(all_text)
         input_basename = "_".join(basenames) + "_"
-        
+
         return process_text_for_tts(
-    text, input_basename, audio_prompt_path_input,
-    exaggeration_input, temperature_input, seed_num_input, cfgw_input,
-    use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
-    to_lowercase, normalize_spacing, fix_dot_letters, keep_original_wav,
-    smart_batch_short_sentences, disable_watermark, num_generations,
-    normalize_audio, normalize_method, normalize_level, normalize_tp,
-    normalize_lra, num_candidates_per_chunk, max_attempts_per_candidate,
-    bypass_whisper_checking, whisper_model_name, enable_parallel,
-    num_parallel_workers, use_longest_transcript_on_fail, sound_words_field
-    )
-    
+            text, input_basename, audio_prompt_path_input,
+            exaggeration_input, temperature_input, seed_num_input, cfgw_input,
+            use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
+            to_lowercase, normalize_spacing, fix_dot_letters, keep_original_wav,
+            smart_batch_short_sentences, disable_watermark, num_generations,
+            normalize_audio, normalize_method, normalize_level, normalize_tp,
+            normalize_lra, num_candidates_per_chunk, max_attempts_per_candidate,
+            bypass_whisper_checking, whisper_model_name, enable_parallel,
+            num_parallel_workers, use_longest_transcript_on_fail, sound_words_field, use_faster_whisper
+        )
     else:
         # No text file: just process the Text Input box as one job
         input_basename = "text_input_"
@@ -466,7 +562,7 @@ def generate_batch_tts(
             normalize_audio, normalize_method, normalize_level, normalize_tp,
             normalize_lra, num_candidates_per_chunk, max_attempts_per_candidate,
             bypass_whisper_checking, whisper_model_name, enable_parallel,
-            num_parallel_workers, use_longest_transcript_on_fail, sound_words_field
+            num_parallel_workers, use_longest_transcript_on_fail, sound_words_field, use_faster_whisper
         )
 
 def process_text_for_tts(
@@ -502,8 +598,13 @@ def process_text_for_tts(
     num_parallel_workers,
     use_longest_transcript_on_fail,
     sound_words_field,
+    use_faster_whisper=False,
 ):
+
+    
+
     model = get_or_load_model()
+    whisper_model = None
     if not text or len(text.strip()) == 0:
         raise ValueError("No text provided.")
     
@@ -580,7 +681,9 @@ def process_text_for_tts(
         # -------- WHISPER VALIDATION --------
         if not bypass_whisper_checking:
             print(f"\033[32m[DEBUG] Validating all candidates with Whisper for all chunks (sequentially)...\033[0m")
-            whisper_model = whisper.load_model(whisper_model_name)  # Load model once
+            model_key = whisper_model_map.get(whisper_model_name, "medium")
+            whisper_model = load_whisper_backend(model_key, use_faster_whisper, DEVICE)
+            # Load model once
             try:
                 all_candidates = []
                 for chunk_idx, candidates in chunk_candidate_map.items():
@@ -599,7 +702,7 @@ def process_text_for_tts(
                             print(f"[ERROR] Candidate file missing or too small: {candidate_path}")
                             chunk_failed_candidates[chunk_idx].append((0.0, candidate_path, ""))
                             continue
-                        path, score, transcribed = whisper_check_mp(candidate_path, sentence_group, whisper_model)
+                        path, score, transcribed = whisper_check_mp(candidate_path, sentence_group, whisper_model, use_faster_whisper)
                         print(f"\033[32m[DEBUG] [Chunk {chunk_idx}] {os.path.basename(candidate_path)}: score={score:.3f}, transcript=\033[33m'{transcribed}'\033[0m")
                         if score >= 0.95:
                             chunk_validations[chunk_idx].append((cand['duration'], cand['path']))
@@ -653,7 +756,7 @@ def process_text_for_tts(
                                     print(f"[ERROR] Retry candidate file missing or too small: {candidate_path}")
                                     chunk_failed_candidates[chunk_idx].append((0.0, candidate_path, ""))
                                     continue
-                                path, score, transcribed = whisper_check_mp(candidate_path, sentence_group, whisper_model)
+                                path, score, transcribed = whisper_check_mp(candidate_path, sentence_group, whisper_model, use_faster_whisper)
                                 print(f"\033[32m[DEBUG] [Chunk {chunk_idx}] RETRY {os.path.basename(candidate_path)}: score={score:.3f}, transcript=\033[33m'{transcribed}'\033[0m")
                                 if score >= 0.95:
                                     chunk_validations[chunk_idx].append((cand['duration'], cand['path']))
@@ -718,7 +821,7 @@ def process_text_for_tts(
         filename_suffix = f"{timestamp}_gen{gen_index+1}_seed{this_seed}"
         wav_output = f"output/{input_basename}audio_{filename_suffix}.wav"
         torchaudio.save(wav_output, full_audio, model.sr)
-        print(f"\033[32m[DEBUG] Final audio concatenated, output file: {wav_output}\033[0m")
+        print(f"\33[104m[DEBUG] \33[5mFinal audio concatenated, output file: {wav_output}\033[0m")
 
         if use_auto_editor:
             try:
@@ -788,19 +891,19 @@ def process_text_for_tts(
 
 # ----- UI SECTION -----
 whisper_model_choices = [
-    "tiny (~1 GB VRAM)",
-    "base (~1.2-2 GB VRAM)",
-    "small (~2-3 GB VRAM)",
-    "medium (~5-8 GB VRAM)",
-    "large (~10-13 GB VRAM)"
+    "tiny (~1 GB VRAM OpenAI / ~0.5 GB faster-whisper)",
+    "base (~1.2–2 GB OpenAI / ~0.7–1 GB faster-whisper)",
+    "small (~2–3 GB OpenAI / ~1.2–1.7 GB faster-whisper)",
+    "medium (~5–8 GB OpenAI / ~2.5–4.5 GB faster-whisper)",
+    "large (~10–13 GB OpenAI / ~4.5–6.5 GB faster-whisper)",
 ]
 
 whisper_model_map = {
-    "tiny (~1 GB VRAM)": "tiny",
-    "base (~1.2-2 GB VRAM)": "base",
-    "small (~2-3 GB VRAM)": "small",
-    "medium (~5-8 GB VRAM)": "medium",
-    "large (~10-13 GB VRAM)": "large"
+    "tiny (~1 GB VRAM OpenAI / ~0.5 GB faster-whisper)": "tiny",
+    "base (~1.2–2 GB OpenAI / ~0.7–1 GB faster-whisper)": "base",
+    "small (~2–3 GB OpenAI / ~1.2–1.7 GB faster-whisper)": "small",
+    "medium (~5–8 GB OpenAI / ~2.5–4.5 GB faster-whisper)": "medium",
+    "large (~10–13 GB OpenAI / ~4.5–6.5 GB faster-whisper)": "large"
 }
 def main():
     with gr.Blocks() as demo:
@@ -824,63 +927,68 @@ One Ring to bring them all and in the darkness bind them
 In the Land of Mordor where the Shadows lie."""
 )
                 text_file_input = gr.File(label="Text File(s) (.txt)", file_types=[".txt"], file_count="multiple")
-                separate_files_checkbox = gr.Checkbox(label="Generate separate audio files per text file", value=False)
+                separate_files_checkbox = gr.Checkbox(label="Generate separate audio files per text file", value=settings["separate_files_checkbox"])
                 ref_audio_input = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Reference Audio (Optional)")
                 export_format_checkboxes = gr.CheckboxGroup(
                     choices=["wav", "mp3", "flac"],
-                    value=["flac", "mp3"],  # default selection
+                    value=settings["export_format_checkboxes"],  # default selection
                     label="Export Format(s): Select one or more"
                 )
-                disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=True)
-                num_generations_input = gr.Number(value=1, precision=0, label="Number of Generations")
-                num_candidates_slider = gr.Slider(1, 10, value=3, step=1, label="Number of Candidates Per Chunk (after batching)")
-                max_attempts_slider = gr.Slider(1, 10, value=3, step=1, label="Max Attempts Per Candidate (Whisper check retries)")
-                bypass_whisper_checkbox = gr.Checkbox(label="Bypass Whisper Checking (pick shortest candidate regardless of transcription)", value=False)
+                disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=settings["disable_watermark_checkbox"])
+                num_generations_input = gr.Number(value=settings["num_generations_input"], precision=0, label="Number of Generations")
+                num_candidates_slider = gr.Slider(1, 10, value=settings["num_candidates_slider"], step=1, label="Number of Candidates Per Chunk (after batching)")
+                max_attempts_slider = gr.Slider(1, 10, value=settings["max_attempts_slider"], step=1, label="Max Attempts Per Candidate (Whisper check retries)")
+                bypass_whisper_checkbox = gr.Checkbox(label="Bypass Whisper Checking (pick shortest candidate regardless of transcription)", value=settings["bypass_whisper_checkbox"])
 
                 whisper_model_dropdown = gr.Dropdown(
                     choices=whisper_model_choices,
-                    value="medium (~5-8 GB VRAM)",
+                    value=settings["whisper_model_dropdown"],
                     label="Whisper Sync Model (with VRAM requirements)",
                     info="Select a Whisper model for sync/transcription; smaller models use less VRAM but are less accurate."
                 )
-
-                enable_parallel_checkbox = gr.Checkbox(label="Enable Parallel Chunk Processing", value=True, visible=False)
-                use_longest_transcript_on_fail_checkbox = gr.Checkbox(
-                label="When all candidates fail Whisper check, pick candidate with longest transcript (not highest fuzzy match score)",
-                value=True
+                use_faster_whisper_checkbox = gr.Checkbox(
+                    label="Use faster-whisper (SYSTRAN) backend for Whisper validation (much faster, less VRAM, almost as accurate)",
+                    value=settings["use_faster_whisper_checkbox"]
                 )
 
-                num_parallel_workers_slider = gr.Slider(1, 8, value=4, step=1, label="Parallel Workers - set to 1 for sequential processing")
+
+                enable_parallel_checkbox = gr.Checkbox(label="Enable Parallel Chunk Processing", value=settings["enable_parallel_checkbox"], visible=False)
+                use_longest_transcript_on_fail_checkbox = gr.Checkbox(
+                label="When all candidates fail Whisper check, pick candidate with longest transcript (not highest fuzzy match score)",
+                value=settings["use_longest_transcript_on_fail_checkbox"]
+                )
+
+                num_parallel_workers_slider = gr.Slider(1, 8, value=settings["num_parallel_workers_slider"], step=1, label="Parallel Workers - set to 1 for sequential processing")
 
                 run_button = gr.Button("Generate")
             with gr.Column():
-                exaggeration_slider = gr.Slider(0.0, 2.0, value=0.5, step=0.1, label="Emotion Exaggeration")
-                cfg_weight_slider = gr.Slider(0.1, 1.0, value=1.0, step=0.01, label="CFG Weight/Pace")
-                temp_slider = gr.Slider(0.01, 5.0, value=0.75, step=0.05, label="Temperature")
-                seed_input = gr.Number(value=0, label="Random Seed (0 for random)")
-                enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=False)
-                smart_batch_short_sentences_checkbox = gr.Checkbox(label="Smart-append short sentences (if batching is off)", value=True)
-                to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=True)
-                normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=True)
-                fix_dot_letters_checkbox = gr.Checkbox(label="Convert 'J.R.R.' style input to 'J R R'", value=True)
+                exaggeration_slider = gr.Slider(0.0, 2.0, value=settings["exaggeration_slider"], step=0.1, label="Emotion Exaggeration")
+                cfg_weight_slider = gr.Slider(0.1, 1.0, value=settings["cfg_weight_slider"], step=0.01, label="CFG Weight/Pace")
+                temp_slider = gr.Slider(0.01, 5.0, value=settings["temp_slider"], step=0.05, label="Temperature")
+                seed_input = gr.Number(value=settings["seed_input"], label="Random Seed (0 for random)")
+                enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=settings["enable_batching_checkbox"])
+                smart_batch_short_sentences_checkbox = gr.Checkbox(label="Smart-append short sentences (if batching is off)", value=settings["smart_batch_short_sentences_checkbox"])
+                to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=settings["to_lowercase_checkbox"])
+                normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=settings["normalize_spacing_checkbox"])
+                fix_dot_letters_checkbox = gr.Checkbox(label="Convert 'J.R.R.' style input to 'J R R'", value=settings["fix_dot_letters_checkbox"])
                 
-                use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=False)
-                keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=False)
-                threshold_slider = gr.Slider(0.01, 0.5, value=0.06, step=0.01, label="Auto-Editor Volume Threshold")
-                margin_slider = gr.Slider(0.0, 2.0, value=0.2, step=0.1, label="Auto-Editor Margin (seconds)")
+                use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=settings["use_auto_editor_checkbox"])
+                keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=settings["keep_original_checkbox"])
+                threshold_slider = gr.Slider(0.01, 0.5, value=settings["threshold_slider"], step=0.01, label="Auto-Editor Volume Threshold")
+                margin_slider = gr.Slider(0.0, 2.0, value=settings["margin_slider"], step=0.1, label="Auto-Editor Margin (seconds)")
 
-                normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=False)
+                normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=settings["normalize_audio_checkbox"])
                 normalize_method_dropdown = gr.Dropdown(
-                    choices=["ebu", "peak"], value="ebu", label="Normalization Method"
+                    choices=["ebu", "peak"], value=settings["normalize_method_dropdown"], label="Normalization Method"
                 )
                 normalize_level_slider = gr.Slider(
-                    -70, -5, value=-24, step=1, label="EBU Target Integrated Loudness (I, dB, ebu only)"
+                    -70, -5, value=settings["normalize_level_slider"], step=1, label="EBU Target Integrated Loudness (I, dB, ebu only)"
                 )
                 normalize_tp_slider = gr.Slider(
-                    -9, 0, value=-2, step=1, label="EBU True Peak (TP, dB, ebu only)"
+                    -9, 0, value=settings["normalize_tp_slider"], step=1, label="EBU True Peak (TP, dB, ebu only)"
                 )
                 normalize_lra_slider = gr.Slider(
-                    1, 50, value=7, step=1, label="EBU Loudness Range (LRA, ebu only)"
+                    1, 50, value=settings["normalize_lra_slider"], step=1, label="EBU Loudness Range (LRA, ebu only)"
                 )
 
 
@@ -895,42 +1003,89 @@ In the Land of Mordor where the Shadows lie."""
                 audio_preview = gr.Audio(label="Audio Preview", interactive=True)
                 audio_dropdown.change(fn=update_audio_preview, inputs=audio_dropdown, outputs=audio_preview)
 
+        def collect_ui_settings(*vals):
+            keys = [
+                "text_input",
+                "separate_files_checkbox",
+                "export_format_checkboxes",
+                "disable_watermark_checkbox",
+                "num_generations_input",
+                "num_candidates_slider",
+                "max_attempts_slider",
+                "bypass_whisper_checkbox",
+                "whisper_model_dropdown",
+                "use_faster_whisper_checkbox",
+                "enable_parallel_checkbox",
+                "use_longest_transcript_on_fail_checkbox",
+                "num_parallel_workers_slider",
+                "exaggeration_slider",
+                "cfg_weight_slider",
+                "temp_slider",
+                "seed_input",
+                "enable_batching_checkbox",
+                "smart_batch_short_sentences_checkbox",
+                "to_lowercase_checkbox",
+                "normalize_spacing_checkbox",
+                "fix_dot_letters_checkbox",
+                "use_auto_editor_checkbox",
+                "keep_original_checkbox",
+                "threshold_slider",
+                "margin_slider",
+                "normalize_audio_checkbox",
+                "normalize_method_dropdown",
+                "normalize_level_slider",
+                "normalize_tp_slider",
+                "normalize_lra_slider",
+                "sound_words_field"
+            ]
+            mapping = dict(zip(keys, vals))
+            save_settings(mapping)
+            return
+
         run_button.click(
-            fn=lambda *args: generate_and_preview(
-                *args[:-6],
-                whisper_model_map[args[-6]],
-                args[-5],
-                int(args[-4]),
-                args[-3],
-                args[-1],    # separate_files_checkbox (should match param order)
-                args[-2],    # sound_words_field (should match param order)
-            ),
-            
+            fn=lambda *args: (
+                collect_ui_settings(*args[:32]),  # adjust if you have more/fewer keys
+                generate_and_preview(*args)
+            )[1],
             inputs=[
-                text_input, text_file_input, ref_audio_input,
-                exaggeration_slider, temp_slider, seed_input, cfg_weight_slider,
-                use_auto_editor_checkbox, threshold_slider, margin_slider,
-                export_format_checkboxes, enable_batching_checkbox,
-                to_lowercase_checkbox, normalize_spacing_checkbox, fix_dot_letters_checkbox,
-                keep_original_checkbox, smart_batch_short_sentences_checkbox,
-                disable_watermark_checkbox, num_generations_input,
-                normalize_audio_checkbox,
-                normalize_method_dropdown,
-                normalize_level_slider,
-                normalize_tp_slider,
-                normalize_lra_slider,
-                num_candidates_slider,
-                max_attempts_slider,
-                bypass_whisper_checkbox,
-                whisper_model_dropdown,
-                enable_parallel_checkbox,
-                num_parallel_workers_slider,
-                use_longest_transcript_on_fail_checkbox,
-                sound_words_field,
-                separate_files_checkbox,
+                text_input,                        # text
+                text_file_input,                   # text_file
+                ref_audio_input,                   # audio_prompt_path_input
+                exaggeration_slider,               # exaggeration_input
+                temp_slider,                       # temperature_input
+                seed_input,                        # seed_num_input
+                cfg_weight_slider,                 # cfgw_input
+                use_auto_editor_checkbox,          # use_auto_editor
+                threshold_slider,                  # ae_threshold
+                margin_slider,                     # ae_margin
+                export_format_checkboxes,          # export_formats
+                enable_batching_checkbox,          # enable_batching
+                to_lowercase_checkbox,             # to_lowercase
+                normalize_spacing_checkbox,        # normalize_spacing
+                fix_dot_letters_checkbox,          # fix_dot_letters
+                keep_original_checkbox,            # keep_original_wav
+                smart_batch_short_sentences_checkbox, # smart_batch_short_sentences
+                disable_watermark_checkbox,        # disable_watermark
+                num_generations_input,             # num_generations
+                normalize_audio_checkbox,          # normalize_audio
+                normalize_method_dropdown,         # normalize_method
+                normalize_level_slider,            # normalize_level
+                normalize_tp_slider,               # normalize_tp
+                normalize_lra_slider,              # normalize_lra
+                num_candidates_slider,             # num_candidates_per_chunk
+                max_attempts_slider,               # max_attempts_per_candidate
+                bypass_whisper_checkbox,           # bypass_whisper_checking
+                whisper_model_dropdown,            # whisper_model_name
+                enable_parallel_checkbox,          # enable_parallel
+                num_parallel_workers_slider,       # num_parallel_workers
+                use_longest_transcript_on_fail_checkbox, # use_longest_transcript_on_fail
+                sound_words_field,                 # sound_words_field
+                use_faster_whisper_checkbox,       # use_faster_whisper
+                separate_files_checkbox            # generate_separate_audio_files
             ],
             outputs=[output_audio, audio_dropdown, audio_preview],
         )
+
         with gr.Accordion("Show Help / Instructions", open=False):
             gr.Markdown(
             """
@@ -1047,9 +1202,58 @@ In the Land of Mordor where the Shadows lie."""
 
             ### **Whisper Sync Options**
             - **Whisper Sync Model (with VRAM requirements):**  
-              Select the OpenAI Whisper model used for speech-to-text validation.  
-              - *tiny/medium/large* differ in accuracy, speed, and VRAM use.
-              - *medium* (~5–8 GB VRAM) is a recommended compromise.
+              Choose which Whisper model to use for automatic speech-to-text checking (to validate each TTS chunk and reduce artifacts). There are **two different backends** you can select:
+
+              **1. OpenAI Whisper (official, more VRAM required):**
+                - *OpenAI's original Whisper models offer high accuracy, but use more VRAM, especially at larger sizes.*
+                - **VRAM usage (approximate, CUDA/float16):**
+                    - tiny: ~1 GB
+                    - base: ~1.2–2 GB
+                    - small: ~2–3 GB
+                    - medium: ~5–8 GB
+                    - large: ~10–13 GB
+                - *medium* (~5–8 GB VRAM) is a good compromise between speed and accuracy for most users.
+                - **Use this if:**  
+                  - You want the "classic" Whisper experience, or your GPU has ample VRAM.
+
+              **2. faster-whisper (SYSTRAN, highly optimized):**
+                - *This is a fast, memory-efficient reimplementation of Whisper. It is nearly as accurate as the official version, but uses far less VRAM and runs significantly faster, especially on modern NVIDIA GPUs.*
+                - **VRAM usage (approximate, CUDA/float16):**
+                    - tiny: ~0.5 GB
+                    - base: ~0.7–1.0 GB
+                    - small: ~1.2–1.7 GB
+                    - medium: ~2.5–4.5 GB
+                    - large: ~4.5–6.5 GB
+                - *Even "large" can run comfortably on a 6 GB GPU!*
+                - **Use this if:**  
+                  - You want faster processing and/or have limited VRAM.
+
+            - **Accuracy/Speed Tips:**
+                - **tiny**/**base** are fastest but less accurate (good for quick checks, not critical applications).
+                - **small**/**medium** are a good balance for most TTS validation use-cases.
+                - **large** offers best accuracy, but is only practical on powerful GPUs.
+
+            - **Which backend should I choose?**
+                - **faster-whisper** is highly recommended for most users.  
+                  It will check the "Use faster-whisper (SYSTRAN) backend" box.  
+                  It is typically 2× faster and uses 30–60% less VRAM than official Whisper.
+                - If you experience VRAM errors with OpenAI Whisper, switch to faster-whisper or a smaller model.
+                - If you want to exactly match results from the original Whisper repo, use the OpenAI Whisper backend.
+
+            - **Note:**  
+                - Model size can affect TTS generation time and GPU memory use. If you get CUDA out-of-memory errors, try a smaller model or enable "faster-whisper".
+
+            ---
+
+            **Summary Table: Whisper Model VRAM Usage**
+
+            | Model   | OpenAI Whisper VRAM | faster-whisper VRAM |
+            |---------|---------------------|--------------------|
+            | tiny    | ~1 GB               | ~0.5 GB            |
+            | base    | ~1.2–2 GB           | ~0.7–1.0 GB        |
+            | small   | ~2–3 GB             | ~1.2–1.7 GB        |
+            | medium  | ~5–8 GB             | ~2.5–4.5 GB        |
+            | large   | ~10–13 GB           | ~4.5–6.5 GB        |
 
             ---
 
