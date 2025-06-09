@@ -1,209 +1,218 @@
-# This is a modified version of [Chatterbox TTS](https://huggingface.co/ResembleAI/chatterbox).
+# 🚀 Chatterbox-TTS-Extended — Features & Technical Explanations
 
-# 🚀 Chatterbox-TTS-Extended — Features & Explanations
+Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch and single text-to-speech (TTS) generation. It extends [Chatterbox-TTS](https://github.com/resemble-ai/chatterbox) with rich support for **multi-file input, candidate selection, artifact reduction, audio validation, auto-processing, parallelism, and workflow automation**. Every option from the script is exposed—making it one of the most customizable TTS pipelines available.
 
-Chatterbox-TTS-Extended is an advanced, highly customizable text-to-speech (TTS) interface built on [Chatterbox-TTS](https://github.com/resemble-ai/chatterbox), offering powerful options for voice, batching, post-processing, file handling, and artifact reduction.
+---
 
 ## 📋 Table of Contents
 
-- [Text & Input Features](#text--input-features)
-- [Voice & Synthesis Controls](#voice--synthesis-controls)
-- [Batching & Chunking](#batching--chunking)
+- [Text Input & File Handling](#text-input--file-handling)
+- [Reference Audio](#reference-audio)
+- [Voice/Emotion/Synthesis Controls](#voiceemotionsynthesis-controls)
+- [Batching & Chunking Features](#batching--chunking-features)
+- [Sound Word Replacement & Removal](#sound-word-replacement--removal)
+- [Candidate Generation & Validation Logic](#candidate-generation--validation-logic)
 - [Audio Post-Processing](#audio-post-processing)
-- [Candidate & Validation Logic](#candidate--validation-logic)
-- [Output & Export Options](#output--export-options)
-- [Sound Word Replacement/Removal](#sound-word-replacementremoval)
-- [Parallel Processing & Performance](#parallel-processing--performance)
+- [Export & Output Options](#export--output-options)
 - [Whisper Sync & Validation](#whisper-sync--validation)
-- [Other Features](#other-features)
+- [Parallel Processing & Performance](#parallel-processing--performance)
+- [Persistent Settings](#persistent-settings)
 - [Tips & Troubleshooting](#tips--troubleshooting)
 - [Installation](#installation)
 
 ---
+### **Feature Coverage Table**
 
-## Text & Input Features
-
-### **Text Input**
-- **Direct Input:** Enter text directly in the textbox for synthesis.
-- **Multi-file Upload:** Upload one or more `.txt` files. When multiple are uploaded, you can combine or process them individually.
-
-### **Generate Separate Audio Files Per Text File**
-- **Batch Mode:** Optionally, each uploaded text file produces a separate output file.
-- **Merge Mode:** All uploaded files are combined (alphabetically) into a single synthesized audio.
-
-### **Reference Audio (Voice Prompt)**
-- **Reference Audio:** Upload or record a short sample to use as a style or voice prompt. The TTS model attempts to mimic this reference.
+| Feature                           | UI Exposed? | Script Logic   |
+|------------------------------------|-------------|---------------|
+| Text input (box + multi-file)      | ✔           | Yes           |
+| Reference audio                    | ✔           | Yes           |
+| Separate/merge file output         | ✔           | Yes           |
+| Emotion, CFG, temperature, seed    | ✔           | Yes           |
+| Batch/smart-append                 | ✔           | Yes           |
+| Sound word remove/replace          | ✔           | Yes           |
+| Auto-Editor post-processing        | ✔           | Yes           |
+| FFmpeg normalization (EBU/peak)    | ✔           | Yes           |
+| WAV/MP3/FLAC export                | ✔           | Yes           |
+| Watermark disable                  | ✔           | Yes           |
+| Candidates per chunk, retries      | ✔           | Yes           |
+| Parallelism (workers)              | ✔           | Yes           |
+| Whisper/faster-whisper backend     | ✔           | Yes           |
+| Persistent settings (JSON)         | ✔           | Yes           |
+| Help/Instructions                  | ✔ (Accordion) | Yes         |
+| Audio preview & download           | ✔           | Yes           |
 
 ---
 
-## Voice & Synthesis Controls
+## Text Input & File Handling
+
+### **Flexible Input**
+- **Text Box:** Enter any text for speech synthesis directly into the interface.
+- **Multi-File Upload:** Drag and drop **multiple `.txt` files**. All text is processed—either merged into a single file or as separate jobs.
+- **Combine or Separate Output:** Choose whether to synthesize each text file to its own audio, or merge all inputs alphabetically into one audio file.
+
+### **Input Preprocessing**
+- **Automatic Lowercasing:** Ensures consistent pronunciation by normalizing to lowercase.
+- **Whitespace Normalization:** Removes excessive spaces, newlines, and cleans the input.
+- **Abbreviation Correction:** Automatically transforms e.g. `"J.R.R."` ➔ `"J R R"` for correct pronunciation of initials.
+
+---
+
+## Reference Audio
+
+- **Voice Prompt:** Upload or record an audio file (microphone or file) as a reference. The model will attempt to mimic the style or identity of this voice.
+- Handles missing or invalid reference audio gracefully (auto-detects and disables if not usable).
+
+---
+
+## Voice/Emotion/Synthesis Controls
 
 ### **Emotion Exaggeration**
-- Controls how dramatically emotions (excited, sad, angry, etc.) are expressed in speech.
-- Range: `0.0` (neutral) to `2.0` (highly exaggerated). `1.0` is the model's standard expressiveness.
+- Controls how strongly emotional cues are emphasized in speech.
+- Range: `0.0` (monotone/neutral), `1.0` (normal), up to `2.0` (extremely expressive).
 
-### **CFG Weight (Classifier-Free Guidance)**
-- Balances strictness to input text vs. naturalness in output.
-- High values (`1.0`) = more literal, less expressive.
-- Low values = more natural, potentially less precise to the original text.
+### **Classifier-Free Guidance (CFG) Weight / Pace**
+- **Controls both strictness and pacing.** Higher values make the model follow the input text more literally and **speak at a steadier, more deliberate pace** (less natural variation, slower/more monotone). Lower values allow the output to be more natural and expressive, often resulting in a slightly **quicker and more dynamic delivery**.
+- Range: `0.1` (free, fast, expressive) to `1.0` (strict, steady, literal).
+- (You may see this labeled as “CFG Weight / Pace” in some UIs.)
 
 ### **Temperature**
-- Adds controlled randomness to the TTS generation.
-- Low values = more predictable, consistent speech.
-- High values = more variety and unpredictability.
+- Sets the level of randomness/creativity in speech patterns.
+- Lower = deterministic and stable; higher = more variation and risk.
 
 ### **Random Seed**
-- `0` = random each time (unique outputs).
-- Any other integer = repeatable, for reproducibility.
+- `0` = fully random on every run.
+- Any other value = repeatable output for debugging and AB testing.
 
 ---
 
-## Batching & Chunking
+## Batching & Chunking Features
 
 ### **Sentence Batching**
-- Automatically groups sentences into "chunks" (up to a character limit, e.g., 400 chars) for smoother, more natural speech.
-- Reduces awkward pauses and enables faster, parallel processing.
+- **Batch Mode:** Groups sentences up to 400 characters (customizable in code) for more natural phrasing and efficient parallel processing.
+- **Smart-Append:** If not batching, intelligently combines short sentences so speech doesn’t sound choppy.
 
-### **Smart-Append Short Sentences**
-- When batching is off, very short sentences are merged with their neighbors to avoid unnatural choppiness.
+### **Chunking**
+- Every batch or group of sentences (a "chunk") is processed individually, enabling fine control over validation and parallelism.
 
-### **Convert 'J.R.R.' Style Input**
-- Detects abbreviations written with periods and spaces them out (e.g., `J.R.R.` ➔ `J R R`) for correct pronunciation.
+---
+
+## Sound Word Replacement & Removal
+
+### **Pre-Synthesis Replacement**
+- Supply a list of "problematic" or unwanted words/phrases to remove or substitute before speech synthesis.
+- **Format:**
+  - Remove: `sss, ss, hmm`
+  - Replace: `Baggins=>Gomberg`
+- Handles possessives, quotes, and standalone word occurrences.
+
+---
+
+## Candidate Generation & Validation Logic
+
+### **Multiple Generations**
+- Choose how many complete, unique audio outputs to generate in one go ("takes" or "generations").
+- Each generation gets a unique or incremented seed, ensuring variety.
+
+### **Candidates Per Chunk**
+- For each chunk, generate several candidates (variants).
+- **Validation:** Each candidate is transcribed by Whisper (speech-to-text), and the best match (highest similarity) is selected for the final audio.
+
+### **Max Attempts Per Candidate**
+- Each candidate may be retried multiple times if it fails validation—minimizing artifacts or errors.
+
+### **Bypass Whisper Checking**
+- **OFF (default):** All candidates undergo Whisper validation.
+- **ON:** Skips Whisper validation for speed—simply picks the shortest audio (can risk more artifacts).
+
+### **Fallback When All Candidates Fail**
+- If every candidate for a chunk fails Whisper validation, you can choose:
+  - Use the one with the **longest transcript** (most text captured)
+  - Or, use the **highest similarity score** (default).
 
 ---
 
 ## Audio Post-Processing
 
 ### **Auto-Editor Integration**
-- Uses [auto-editor](https://github.com/WyattBlue/auto-editor) to remove silence and TTS artifacts.
-- **Volume Threshold:** Sets minimum loudness to consider as speech.
-- **Margin:** Buffer time before and after detected speech to prevent cutting off words or breaths.
-- **Keep Original:** Optionally retains the raw, unprocessed WAV alongside the cleaned version.
+- [auto-editor](https://github.com/WyattBlue/auto-editor) is used to remove silence, stutters, and TTS artifacts.
+- **Volume Threshold:** Minimum loudness (0.01–0.5) considered speech.
+- **Margin:** Time buffer (seconds) before/after speech to avoid cutting off words.
+- **Keep Original:** Option to save the raw WAV file in addition to the cleaned-up output.
 
-### **Audio Normalization (ffmpeg)**
-- Uses `ffmpeg` for post-processing:
-  - **EBU R128 Loudness Normalization:** Adjusts to a target loudness (TV/podcast standard).
-  - **Peak Normalization:** Ensures audio peaks don't clip.
-
-### **Customizable Normalization Settings**
-- **Integrated Loudness (I):** Target perceived loudness.
-- **True Peak (TP):** Max allowable peak.
-- **Loudness Range (LRA):** Controls compression/dynamics.
+### **FFmpeg Normalization**
+- **EBU R128 Loudness Normalization:** Ensures target perceived loudness, true peak, and dynamic range.
+- **Peak Normalization:** Simple normalization to avoid clipping.
+- **All settings exposed:** Integrated Loudness (I), True Peak (TP), and Loudness Range (LRA).
 
 ---
 
-## Candidate & Validation Logic
+## Export & Output Options
 
-### **Number of Generations**
-- Specify how many different outputs ("takes") to generate for the same input.
+### **Export Format**
+- Output audio as WAV, MP3 (320k high quality), FLAC—or all at once.
+- All conversions are automatic, and temp files are cleaned up as needed.
 
-### **Number of Candidates Per Chunk**
-- For each chunk, generate several variants and select the best one based on validation logic.
-- Helps reduce TTS artifacts and find the best-sounding output.
+### **Filename Convention**
+- Output filenames include base name, timestamp, generation number, and random seed, for easy sorting and reproducibility.
 
-### **Max Attempts Per Candidate**
-- How many times to retry a candidate if it fails validation (up to N retries per candidate).
-
-### **Bypass Whisper Checking**
-- If enabled, candidate validation (via Whisper) is skipped; the shortest-duration candidate is selected (faster but riskier).
-
-### **Fallback Logic When All Candidates Fail**
-- If all candidates fail validation, can pick either:
-  - The candidate with the highest Whisper similarity score (best match to input text)
-  - Or, if enabled, the one with the longest transcribed text (useful for highly variable outputs)
-
----
-
-## Output & Export Options
-
-### **Export Formats**
-- **Multi-format Output:** Choose one or more output types: `wav`, `mp3` (high quality, 320k), `flac`.
-- **Export all selected formats at once.**
-
-### **Output File Naming**
-- Filenames include a base name (from uploaded file), timestamp, generation number, and seed for easy tracking.
-
----
-
-## Sound Word Replacement/Removal
-
-### **Sound Words / Word Replacement**
-- **Remove or Replace Words:** Supply a list of "problem words" to remove or substitute before synthesis.
-- **Format:**  
-  - Remove: `ss, sss, hmm` (comma/newline separated)
-  - Replace: `Baggins=>Gomberg`
-  - Handles possessives, quoted words, and standalone occurrences.
-
----
-
-## Parallel Processing & Performance
-
-### **Parallel Chunk Processing**
-- Synthesizes multiple chunks at once for huge speed gains on capable GPUs.
-- **Parallel Workers:** Set the number of concurrent jobs (1 = sequential, higher = more parallelism).
+### **Batch Export**
+- If multiple text files and "separate files" is selected, all are processed in sequence with their own outputs.
 
 ---
 
 ## Whisper Sync & Validation
 
-### **Whisper Model Selection**
-- Select which OpenAI Whisper model to use for transcription validation (`tiny`, `base`, `small`, `medium`, `large`), with estimated VRAM usage.
-- Smaller models are faster/less accurate, large ones are slower/more precise.
+### **Flexible Whisper Backend**
+- **OpenAI Whisper:** Classic, accurate but uses more VRAM.
+- **faster-whisper (SYSTRAN):** Reimplementation, almost as accurate, much faster and dramatically less VRAM.
+- User selects which backend and model size in the UI.
 
-### **Whisper-Based Validation**
-- Each audio candidate is transcribed using Whisper and checked against the original input.
-- The best candidate is selected by highest match score (or shortest duration if Whisper is bypassed).
+### **Whisper Model VRAM/Speed Info**
+- Model size and VRAM requirements are shown, with both OpenAI and faster-whisper numbers.
+- Automatically disables Whisper checking if not needed, or if bypass is enabled.
+
+### **Whisper-Based Candidate Selection**
+- Each chunk's candidates are transcribed, and the one that most closely matches the input text (via fuzzy match/sequence similarity) is chosen.
+- If Whisper is bypassed, shortest duration candidate is chosen.
+
+### **Advanced Fallbacks**
+- If all candidates fail, can use longest transcript or highest fuzzy score per user preference.
+
 ---
 
-## Other Features
+## Parallel Processing & Performance
 
-### **Text Preprocessing**
-- **Convert to Lowercase:** Normalize input for consistency.
-- **Normalize Whitespace:** Remove redundant spaces and blank lines.
+- **Full Parallelism:** Generate multiple chunks in parallel (configurable worker count, default 4).
+- **Worker Control:** Users can reduce workers to 1 for sequential/low-VRAM processing or increase for maximum throughput on large GPUs.
+- **Cleans up GPU memory after Whisper validation to avoid VRAM leaks.**
 
-### **Debug Output**
-- Extensive terminal debug logging with color coding for progress, warnings, and errors.
+---
 
-### **Error Handling**
-- Attempts to catch and report errors throughout TTS generation, candidate validation, file I/O, and post-processing steps.
+## Persistent Settings
+
+- **JSON Settings Save/Load:** All UI choices are persisted to `settings.json` on every run/change, restoring your last-used configuration automatically.
 
 ---
 
 ## Tips & Troubleshooting
 
-- **VRAM or speed issues?**  
+- **Out of VRAM or slow?**
   - Reduce parallel workers
-  - Switch to a smaller Whisper model
-  - Lower number of candidates per chunk
-
-- **Audio choppy or abrupt?**  
-  - Increase Auto-Editor margin
-  - Lower silence threshold
-
-- **Want consistent results?**  
-  - Set a non-zero random seed
-
-- **Artifacts or mispronunciations?**  
-  - Use more candidates, increase attempts, or adjust sound word replacements
+  - Use a smaller or faster-whisper model
+  - Lower the number of candidates
+- **Artifacts/Errors?**
+  - Increase candidates and retries
+  - Tweak auto-editor margin/threshold
+  - Refine sound word replacements
+- **Audio choppy?**
+  - Raise auto-editor margin or lower threshold
+- **Reproducibility**
+  - Use a non-zero random seed to repeat identical results
 
 ---
 
-## 📝 License & Credits
-
-See the main repo for license details.  
-Original TTS: [Chatterbox-TTS](https://github.com/resemble-ai/chatterbox)  
-Auto-Editor: [WyattBlue/auto-editor](https://github.com/WyattBlue/auto-editor)  
-Whisper: [OpenAI Whisper](https://github.com/openai/whisper)
-
----
-
-## 📣 Feedback & Contributions
-
-Open an issue or pull request with your suggestions, bug reports, or improvements!
-
----
-
-# Installation
+## 📝 Installation
 
 I'm running this in a Python 3.10.6 virtual environment. I do not know what other versions work.
 
@@ -219,5 +228,12 @@ Then install via
 Then run via
 `python Chatter.py`
 
-
 [FFMPEG](https://ffmpeg.org/download.html) is required. If you don't have it installed in your system path, put it in the same directory as the Chatter.py script.
+
+---
+
+## 📣 Feedback & Contributions
+
+Open an issue or pull request with suggestions, bug reports, or improvements!
+
+---
