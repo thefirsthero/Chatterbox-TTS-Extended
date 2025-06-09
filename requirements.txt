@@ -1,5 +1,6 @@
 gradio
 numpy
+faster-whisper
 openai-whisper
 ffmpeg-python
 auto-editor==27.1.1
