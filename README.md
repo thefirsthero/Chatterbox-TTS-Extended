@@ -18,7 +18,7 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 - [Parallel Processing & Performance](#parallel-processing--performance)
 - [Persistent Settings](#persistent-settings)
 - [Tips & Troubleshooting](#tips--troubleshooting)
-- [Installation](#installation)
+- [Installation](#-installation)
 
 ---
 ### **Feature Coverage Table**
