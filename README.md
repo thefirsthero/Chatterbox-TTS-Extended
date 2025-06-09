@@ -191,7 +191,7 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 
 ## Persistent Settings
 
-- **JSON Settings Save/Load:** All UI choices are persisted to `settings.json` on every run/change, restoring your last-used configuration automatically.
+- **JSON Settings Save/Load:** All UI choices are persisted to `settings.json` on every run/change, restoring your last-used configuration automatically. To reset your settings to default, delete the `settings.json` folder in the root directory.
 
 ---
 
