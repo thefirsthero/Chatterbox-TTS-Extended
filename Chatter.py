@@ -23,7 +23,7 @@ from nltk.tokenize import sent_tokenize
 from faster_whisper import WhisperModel as FasterWhisperModel
 import json
 SETTINGS_PATH = "settings.json"
-
+#THIS IS THE START
 def load_settings():
     if os.path.exists(SETTINGS_PATH):
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
@@ -910,21 +910,7 @@ def main():
         gr.Markdown("# 🎧 Chatterbox TTS Extended")
         with gr.Row():
             with gr.Column():
-                text_input = gr.Textbox(label="Text Input", lines=6, value="""Three Rings for the Elven-kings under the sky,
-
-Seven for the Dwarf-lords in their halls of stone,
-
-Nine for Mortal Men doomed to die,
-
-One for the Dark Lord on his dark throne
-
-In the Land of Mordor where the Shadows lie.
-
-One Ring to rule them all, One Ring to find them,
-
-One Ring to bring them all and in the darkness bind them
-
-In the Land of Mordor where the Shadows lie."""
+                text_input = gr.Textbox(label="Text Input", lines=6, value=settings["text_input"]
 )
                 text_file_input = gr.File(label="Text File(s) (.txt)", file_types=[".txt"], file_count="multiple")
                 separate_files_checkbox = gr.Checkbox(label="Generate separate audio files per text file", value=settings["separate_files_checkbox"])
@@ -995,7 +981,8 @@ In the Land of Mordor where the Shadows lie."""
                 sound_words_field = gr.Textbox(
                     label="Remove/Replace Words/Sounds (comma/newline separated or 'sound=>replacement')",
                     lines=2,
-                    info="Examples: sss, ss, ahh=>um, hmm (removes/replace as standalone or quoted; not in words)"
+                    info="Examples: sss, ss, ahh=>um, hmm (removes/replace as standalone or quoted; not in words)",
+                    value=settings["sound_words_field"]
                 )
 
                 output_audio = gr.Files(label="Download Final Audio File(s)")
@@ -1006,82 +993,84 @@ In the Land of Mordor where the Shadows lie."""
         def collect_ui_settings(*vals):
             keys = [
                 "text_input",
-                "separate_files_checkbox",
-                "export_format_checkboxes",
-                "disable_watermark_checkbox",
-                "num_generations_input",
-                "num_candidates_slider",
-                "max_attempts_slider",
-                "bypass_whisper_checkbox",
-                "whisper_model_dropdown",
-                "use_faster_whisper_checkbox",
-                "enable_parallel_checkbox",
-                "use_longest_transcript_on_fail_checkbox",
-                "num_parallel_workers_slider",
                 "exaggeration_slider",
-                "cfg_weight_slider",
                 "temp_slider",
                 "seed_input",
+                "cfg_weight_slider",
+                "use_auto_editor_checkbox",
+                "threshold_slider",
+                "margin_slider",
+                "export_format_checkboxes",
                 "enable_batching_checkbox",
-                "smart_batch_short_sentences_checkbox",
                 "to_lowercase_checkbox",
                 "normalize_spacing_checkbox",
                 "fix_dot_letters_checkbox",
-                "use_auto_editor_checkbox",
                 "keep_original_checkbox",
-                "threshold_slider",
-                "margin_slider",
+                "smart_batch_short_sentences_checkbox",
+                "disable_watermark_checkbox",
+                "num_generations_input",
                 "normalize_audio_checkbox",
                 "normalize_method_dropdown",
                 "normalize_level_slider",
                 "normalize_tp_slider",
                 "normalize_lra_slider",
-                "sound_words_field"
+                "num_candidates_slider",
+                "max_attempts_slider",
+                "bypass_whisper_checkbox",
+                "whisper_model_dropdown",
+                "enable_parallel_checkbox",
+                "num_parallel_workers_slider",
+                "use_longest_transcript_on_fail_checkbox",
+                "sound_words_field",
+                "use_faster_whisper_checkbox",
+                "separate_files_checkbox",
             ]
+            if len(keys) != len(vals):
+                raise ValueError(f"[SETTINGS ERROR] collect_ui_settings: Number of values ({len(vals)}) does not match keys ({len(keys)})!")
             mapping = dict(zip(keys, vals))
             save_settings(mapping)
             return
 
         run_button.click(
             fn=lambda *args: (
-                collect_ui_settings(*args[:32]),  # adjust if you have more/fewer keys
+                collect_ui_settings(*([args[0]] + list(args[3:]))),  # text_input + rest of option fields (skipping file/audio)
                 generate_and_preview(*args)
             )[1],
             inputs=[
-                text_input,                        # text
-                text_file_input,                   # text_file
-                ref_audio_input,                   # audio_prompt_path_input
-                exaggeration_slider,               # exaggeration_input
-                temp_slider,                       # temperature_input
-                seed_input,                        # seed_num_input
-                cfg_weight_slider,                 # cfgw_input
-                use_auto_editor_checkbox,          # use_auto_editor
-                threshold_slider,                  # ae_threshold
-                margin_slider,                     # ae_margin
-                export_format_checkboxes,          # export_formats
-                enable_batching_checkbox,          # enable_batching
-                to_lowercase_checkbox,             # to_lowercase
-                normalize_spacing_checkbox,        # normalize_spacing
-                fix_dot_letters_checkbox,          # fix_dot_letters
-                keep_original_checkbox,            # keep_original_wav
-                smart_batch_short_sentences_checkbox, # smart_batch_short_sentences
-                disable_watermark_checkbox,        # disable_watermark
-                num_generations_input,             # num_generations
-                normalize_audio_checkbox,          # normalize_audio
-                normalize_method_dropdown,         # normalize_method
-                normalize_level_slider,            # normalize_level
-                normalize_tp_slider,               # normalize_tp
-                normalize_lra_slider,              # normalize_lra
-                num_candidates_slider,             # num_candidates_per_chunk
-                max_attempts_slider,               # max_attempts_per_candidate
-                bypass_whisper_checkbox,           # bypass_whisper_checking
-                whisper_model_dropdown,            # whisper_model_name
-                enable_parallel_checkbox,          # enable_parallel
-                num_parallel_workers_slider,       # num_parallel_workers
-                use_longest_transcript_on_fail_checkbox, # use_longest_transcript_on_fail
-                sound_words_field,                 # sound_words_field
-                use_faster_whisper_checkbox,       # use_faster_whisper
-                separate_files_checkbox            # generate_separate_audio_files
+                text_input,                   # 0
+                text_file_input,              # 1
+                ref_audio_input,              # 2
+                exaggeration_slider,          # 3
+                temp_slider,                  # 4
+                seed_input,                   # 5
+                cfg_weight_slider,            # 6
+                use_auto_editor_checkbox,     # 7
+                threshold_slider,             # 8
+                margin_slider,                # 9
+                export_format_checkboxes,     #10
+                enable_batching_checkbox,     #11
+                to_lowercase_checkbox,        #12
+                normalize_spacing_checkbox,   #13
+                fix_dot_letters_checkbox,     #14
+                keep_original_checkbox,       #15
+                smart_batch_short_sentences_checkbox,#16
+                disable_watermark_checkbox,   #17
+                num_generations_input,        #18
+                normalize_audio_checkbox,     #19
+                normalize_method_dropdown,    #20
+                normalize_level_slider,       #21
+                normalize_tp_slider,          #22
+                normalize_lra_slider,         #23
+                num_candidates_slider,        #24
+                max_attempts_slider,          #25
+                bypass_whisper_checkbox,      #26
+                whisper_model_dropdown,       #27
+                enable_parallel_checkbox,     #28
+                num_parallel_workers_slider,  #29
+                use_longest_transcript_on_fail_checkbox, #30
+                sound_words_field,            #31
+                use_faster_whisper_checkbox,  #32
+                separate_files_checkbox       #33
             ],
             outputs=[output_audio, audio_dropdown, audio_preview],
         )
