@@ -195,6 +195,35 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 
 ---
 
+### 🎙️ Voice Conversion (VC)
+
+Convert any voice to sound like another! The new **Voice Conversion** tab enables you to transform the speaker in any audio file so that it matches the style, timbre, and tone of a target reference voice. Perfect for AI voice swaps, privacy, dubbing, or experimentation.
+
+**How to use:**
+- Go to the **Voice Conversion (VC)** tab.
+- Upload or record your **input audio** (the voice to convert).
+- Upload or record the **target voice audio** (the voice you want to sound like).
+- Click **"Run Voice Conversion"**.
+- Download or preview your converted audio!
+
+**Technical highlights:**
+- Handles long input audio by automatically splitting into overlapping chunks and recombining with crossfades for smooth transitions.
+- Output matches the model’s sample rate for best fidelity.
+- Chunks and processing are fully automated; no user tuning required.
+
+---
+
+### 📄 Generate Separate Audio Files Per Text File
+
+You can now **batch-process multiple text files** and choose whether you want one combined audio or a separate audio output for each file:
+- Upload any number of `.txt` files in the main TTS tab.
+- To synthesize each to its own audio, check **"Generate separate audio files per text file"**.
+- To merge all files, leave it unchecked.
+
+**Tip:** Output files are named for easy sorting and reproducibility.
+
+---
+
 ## Tips & Troubleshooting
 
 - **Out of VRAM or slow?**
