@@ -17,7 +17,7 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 - [Whisper Sync & Validation](#whisper-sync--validation)
 - [Parallel Processing & Performance](#parallel-processing--performance)
 - [Persistent Settings](#persistent-settings)
-- [Voice Conversion](#-voice-conversion-vc)
+- [Voice Conversion](#voice-conversion-vc)
 - [Tips & Troubleshooting](#tips--troubleshooting)
 - [Installation](#-installation)
 
