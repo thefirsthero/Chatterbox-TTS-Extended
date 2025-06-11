@@ -22,6 +22,8 @@ import nltk
 from nltk.tokenize import sent_tokenize
 from faster_whisper import WhisperModel as FasterWhisperModel
 import json
+import soundfile as sf
+from chatterbox.src.chatterbox.vc import ChatterboxVC
 SETTINGS_PATH = "settings.json"
 #THIS IS THE START
 def load_settings():
@@ -42,7 +44,74 @@ def save_settings(mapping):
         json.dump(mapping, f, indent=2)
         
         
+# === VC TAB (NEW) ===
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+VC_MODEL = None
 
+def get_or_load_vc_model():
+    global VC_MODEL
+    if VC_MODEL is None:
+        VC_MODEL = ChatterboxVC.from_pretrained(DEVICE)
+    return VC_MODEL
+
+
+
+def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, overlap_sec=0.1, disable_watermark=False):
+    import soundfile as sf
+    import librosa
+    vc_model = get_or_load_vc_model()
+    model_sr = vc_model.sr
+
+    wav, sr = sf.read(input_audio_path)
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    if sr != model_sr:
+        wav = librosa.resample(wav, orig_sr=sr, target_sr=model_sr)
+        sr = model_sr
+
+    total_sec = len(wav) / model_sr
+
+    if total_sec <= chunk_sec:
+        wav_out = vc_model.generate(
+            input_audio_path,
+            target_voice_path=target_voice_audio_path,
+            apply_watermark=not disable_watermark
+        )
+        out_wav = wav_out.squeeze(0).numpy()
+        return model_sr, out_wav
+
+    # chunking logic for long files
+    chunk_samples = int(chunk_sec * model_sr)
+    overlap_samples = int(overlap_sec * model_sr)
+    step_samples = chunk_samples - overlap_samples
+
+    out_chunks = []
+    for start in range(0, len(wav), step_samples):
+        end = min(start + chunk_samples, len(wav))
+        chunk = wav[start:end]
+        temp_chunk_path = f"temp_vc_chunk_{start}_{end}.wav"
+        sf.write(temp_chunk_path, chunk, model_sr)
+        out_chunk = vc_model.generate(
+            temp_chunk_path,
+            target_voice_path=target_voice_audio_path,
+            apply_watermark=not disable_watermark
+        )
+        out_chunk_np = out_chunk.squeeze(0).numpy()
+        out_chunks.append(out_chunk_np)
+        os.remove(temp_chunk_path)
+
+    # Crossfade join as before...
+    result = out_chunks[0]
+    for i in range(1, len(out_chunks)):
+        overlap = min(overlap_samples, len(out_chunks[i]), len(result))
+        if overlap > 0:
+            fade_out = np.linspace(1, 0, overlap)
+            fade_in = np.linspace(0, 1, overlap)
+            result[-overlap:] = result[-overlap:] * fade_out + out_chunks[i][:overlap] * fade_in
+            result = np.concatenate([result, out_chunks[i][overlap:]])
+        else:
+            result = np.concatenate([result, out_chunks[i]])
+    return model_sr, result
 
 def default_settings():
     return {
@@ -908,173 +977,202 @@ whisper_model_map = {
 def main():
     with gr.Blocks() as demo:
         gr.Markdown("# 🎧 Chatterbox TTS Extended")
-        with gr.Row():
-            with gr.Column():
-                text_input = gr.Textbox(label="Text Input", lines=6, value=settings["text_input"]
-)
-                text_file_input = gr.File(label="Text File(s) (.txt)", file_types=[".txt"], file_count="multiple")
-                separate_files_checkbox = gr.Checkbox(label="Generate separate audio files per text file", value=settings["separate_files_checkbox"])
-                ref_audio_input = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Reference Audio (Optional)")
-                export_format_checkboxes = gr.CheckboxGroup(
-                    choices=["wav", "mp3", "flac"],
-                    value=settings["export_format_checkboxes"],  # default selection
-                    label="Export Format(s): Select one or more"
-                )
-                disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=settings["disable_watermark_checkbox"])
-                num_generations_input = gr.Number(value=settings["num_generations_input"], precision=0, label="Number of Generations")
-                num_candidates_slider = gr.Slider(1, 10, value=settings["num_candidates_slider"], step=1, label="Number of Candidates Per Chunk (after batching)")
-                max_attempts_slider = gr.Slider(1, 10, value=settings["max_attempts_slider"], step=1, label="Max Attempts Per Candidate (Whisper check retries)")
-                bypass_whisper_checkbox = gr.Checkbox(label="Bypass Whisper Checking (pick shortest candidate regardless of transcription)", value=settings["bypass_whisper_checkbox"])
-
-                whisper_model_dropdown = gr.Dropdown(
-                    choices=whisper_model_choices,
-                    value=settings["whisper_model_dropdown"],
-                    label="Whisper Sync Model (with VRAM requirements)",
-                    info="Select a Whisper model for sync/transcription; smaller models use less VRAM but are less accurate."
-                )
-                use_faster_whisper_checkbox = gr.Checkbox(
-                    label="Use faster-whisper (SYSTRAN) backend for Whisper validation (much faster, less VRAM, almost as accurate)",
-                    value=settings["use_faster_whisper_checkbox"]
-                )
-
-
-                enable_parallel_checkbox = gr.Checkbox(label="Enable Parallel Chunk Processing", value=settings["enable_parallel_checkbox"], visible=False)
-                use_longest_transcript_on_fail_checkbox = gr.Checkbox(
-                label="When all candidates fail Whisper check, pick candidate with longest transcript (not highest fuzzy match score)",
-                value=settings["use_longest_transcript_on_fail_checkbox"]
-                )
-
-                num_parallel_workers_slider = gr.Slider(1, 8, value=settings["num_parallel_workers_slider"], step=1, label="Parallel Workers - set to 1 for sequential processing")
-
-                run_button = gr.Button("Generate")
-            with gr.Column():
-                exaggeration_slider = gr.Slider(0.0, 2.0, value=settings["exaggeration_slider"], step=0.1, label="Emotion Exaggeration")
-                cfg_weight_slider = gr.Slider(0.1, 1.0, value=settings["cfg_weight_slider"], step=0.01, label="CFG Weight/Pace")
-                temp_slider = gr.Slider(0.01, 5.0, value=settings["temp_slider"], step=0.05, label="Temperature")
-                seed_input = gr.Number(value=settings["seed_input"], label="Random Seed (0 for random)")
-                enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=settings["enable_batching_checkbox"])
-                smart_batch_short_sentences_checkbox = gr.Checkbox(label="Smart-append short sentences (if batching is off)", value=settings["smart_batch_short_sentences_checkbox"])
-                to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=settings["to_lowercase_checkbox"])
-                normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=settings["normalize_spacing_checkbox"])
-                fix_dot_letters_checkbox = gr.Checkbox(label="Convert 'J.R.R.' style input to 'J R R'", value=settings["fix_dot_letters_checkbox"])
-                
-                use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=settings["use_auto_editor_checkbox"])
-                keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=settings["keep_original_checkbox"])
-                threshold_slider = gr.Slider(0.01, 0.5, value=settings["threshold_slider"], step=0.01, label="Auto-Editor Volume Threshold")
-                margin_slider = gr.Slider(0.0, 2.0, value=settings["margin_slider"], step=0.1, label="Auto-Editor Margin (seconds)")
-
-                normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=settings["normalize_audio_checkbox"])
-                normalize_method_dropdown = gr.Dropdown(
-                    choices=["ebu", "peak"], value=settings["normalize_method_dropdown"], label="Normalization Method"
-                )
-                normalize_level_slider = gr.Slider(
-                    -70, -5, value=settings["normalize_level_slider"], step=1, label="EBU Target Integrated Loudness (I, dB, ebu only)"
-                )
-                normalize_tp_slider = gr.Slider(
-                    -9, 0, value=settings["normalize_tp_slider"], step=1, label="EBU True Peak (TP, dB, ebu only)"
-                )
-                normalize_lra_slider = gr.Slider(
-                    1, 50, value=settings["normalize_lra_slider"], step=1, label="EBU Loudness Range (LRA, ebu only)"
-                )
-
-
-                sound_words_field = gr.Textbox(
-                    label="Remove/Replace Words/Sounds (comma/newline separated or 'sound=>replacement')",
-                    lines=2,
-                    info="Examples: sss, ss, ahh=>um, hmm (removes/replace as standalone or quoted; not in words)",
-                    value=settings["sound_words_field"]
-                )
-
-                output_audio = gr.Files(label="Download Final Audio File(s)")
-                audio_dropdown = gr.Dropdown(label="Click to Preview Any Generated File")
-                audio_preview = gr.Audio(label="Audio Preview", interactive=True)
-                audio_dropdown.change(fn=update_audio_preview, inputs=audio_dropdown, outputs=audio_preview)
-
-        def collect_ui_settings(*vals):
-            keys = [
-                "text_input",
-                "exaggeration_slider",
-                "temp_slider",
-                "seed_input",
-                "cfg_weight_slider",
-                "use_auto_editor_checkbox",
-                "threshold_slider",
-                "margin_slider",
-                "export_format_checkboxes",
-                "enable_batching_checkbox",
-                "to_lowercase_checkbox",
-                "normalize_spacing_checkbox",
-                "fix_dot_letters_checkbox",
-                "keep_original_checkbox",
-                "smart_batch_short_sentences_checkbox",
-                "disable_watermark_checkbox",
-                "num_generations_input",
-                "normalize_audio_checkbox",
-                "normalize_method_dropdown",
-                "normalize_level_slider",
-                "normalize_tp_slider",
-                "normalize_lra_slider",
-                "num_candidates_slider",
-                "max_attempts_slider",
-                "bypass_whisper_checkbox",
-                "whisper_model_dropdown",
-                "enable_parallel_checkbox",
-                "num_parallel_workers_slider",
-                "use_longest_transcript_on_fail_checkbox",
-                "sound_words_field",
-                "use_faster_whisper_checkbox",
-                "separate_files_checkbox",
-            ]
-            if len(keys) != len(vals):
-                raise ValueError(f"[SETTINGS ERROR] collect_ui_settings: Number of values ({len(vals)}) does not match keys ({len(keys)})!")
-            mapping = dict(zip(keys, vals))
-            save_settings(mapping)
-            return
-
-        run_button.click(
-            fn=lambda *args: (
-                collect_ui_settings(*([args[0]] + list(args[3:]))),  # text_input + rest of option fields (skipping file/audio)
-                generate_and_preview(*args)
-            )[1],
-            inputs=[
-                text_input,                   # 0
-                text_file_input,              # 1
-                ref_audio_input,              # 2
-                exaggeration_slider,          # 3
-                temp_slider,                  # 4
-                seed_input,                   # 5
-                cfg_weight_slider,            # 6
-                use_auto_editor_checkbox,     # 7
-                threshold_slider,             # 8
-                margin_slider,                # 9
-                export_format_checkboxes,     #10
-                enable_batching_checkbox,     #11
-                to_lowercase_checkbox,        #12
-                normalize_spacing_checkbox,   #13
-                fix_dot_letters_checkbox,     #14
-                keep_original_checkbox,       #15
-                smart_batch_short_sentences_checkbox,#16
-                disable_watermark_checkbox,   #17
-                num_generations_input,        #18
-                normalize_audio_checkbox,     #19
-                normalize_method_dropdown,    #20
-                normalize_level_slider,       #21
-                normalize_tp_slider,          #22
-                normalize_lra_slider,         #23
-                num_candidates_slider,        #24
-                max_attempts_slider,          #25
-                bypass_whisper_checkbox,      #26
-                whisper_model_dropdown,       #27
-                enable_parallel_checkbox,     #28
-                num_parallel_workers_slider,  #29
-                use_longest_transcript_on_fail_checkbox, #30
-                sound_words_field,            #31
-                use_faster_whisper_checkbox,  #32
-                separate_files_checkbox       #33
-            ],
-            outputs=[output_audio, audio_dropdown, audio_preview],
+        with gr.Tabs():
+            # TTS Tab (your original interface)
+            with gr.Tab("TTS & Multi-Gen"):
+                with gr.Row():
+                    with gr.Column():
+                        text_input = gr.Textbox(label="Text Input", lines=6, value=settings["text_input"]
         )
+                        text_file_input = gr.File(label="Text File(s) (.txt)", file_types=[".txt"], file_count="multiple")
+                        separate_files_checkbox = gr.Checkbox(label="Generate separate audio files per text file", value=settings["separate_files_checkbox"])
+                        ref_audio_input = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Reference Audio (Optional)")
+                        export_format_checkboxes = gr.CheckboxGroup(
+                            choices=["wav", "mp3", "flac"],
+                            value=settings["export_format_checkboxes"],  # default selection
+                            label="Export Format(s): Select one or more"
+                        )
+                        disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=settings["disable_watermark_checkbox"], visible=False)
+                        num_generations_input = gr.Number(value=settings["num_generations_input"], precision=0, label="Number of Generations")
+                        num_candidates_slider = gr.Slider(1, 10, value=settings["num_candidates_slider"], step=1, label="Number of Candidates Per Chunk (after batching)")
+                        max_attempts_slider = gr.Slider(1, 10, value=settings["max_attempts_slider"], step=1, label="Max Attempts Per Candidate (Whisper check retries)")
+                        bypass_whisper_checkbox = gr.Checkbox(label="Bypass Whisper Checking (pick shortest candidate regardless of transcription)", value=settings["bypass_whisper_checkbox"])
 
+                        whisper_model_dropdown = gr.Dropdown(
+                            choices=whisper_model_choices,
+                            value=settings["whisper_model_dropdown"],
+                            label="Whisper Sync Model (with VRAM requirements)",
+                            info="Select a Whisper model for sync/transcription; smaller models use less VRAM but are less accurate."
+                        )
+                        use_faster_whisper_checkbox = gr.Checkbox(
+                            label="Use faster-whisper (SYSTRAN) backend for Whisper validation (much faster, less VRAM, almost as accurate)",
+                            value=settings["use_faster_whisper_checkbox"]
+                        )
+
+
+                        enable_parallel_checkbox = gr.Checkbox(label="Enable Parallel Chunk Processing", value=settings["enable_parallel_checkbox"], visible=False)
+                        use_longest_transcript_on_fail_checkbox = gr.Checkbox(
+                        label="When all candidates fail Whisper check, pick candidate with longest transcript (not highest fuzzy match score)",
+                        value=settings["use_longest_transcript_on_fail_checkbox"]
+                        )
+
+                        num_parallel_workers_slider = gr.Slider(1, 8, value=settings["num_parallel_workers_slider"], step=1, label="Parallel Workers - set to 1 for sequential processing")
+
+                        run_button = gr.Button("Generate")
+                    with gr.Column():
+                        exaggeration_slider = gr.Slider(0.0, 2.0, value=settings["exaggeration_slider"], step=0.1, label="Emotion Exaggeration")
+                        cfg_weight_slider = gr.Slider(0.1, 1.0, value=settings["cfg_weight_slider"], step=0.01, label="CFG Weight/Pace")
+                        temp_slider = gr.Slider(0.01, 5.0, value=settings["temp_slider"], step=0.05, label="Temperature")
+                        seed_input = gr.Number(value=settings["seed_input"], label="Random Seed (0 for random)")
+                        enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=settings["enable_batching_checkbox"])
+                        smart_batch_short_sentences_checkbox = gr.Checkbox(label="Smart-append short sentences (if batching is off)", value=settings["smart_batch_short_sentences_checkbox"])
+                        to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=settings["to_lowercase_checkbox"])
+                        normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=settings["normalize_spacing_checkbox"])
+                        fix_dot_letters_checkbox = gr.Checkbox(label="Convert 'J.R.R.' style input to 'J R R'", value=settings["fix_dot_letters_checkbox"])
+                        
+                        use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=settings["use_auto_editor_checkbox"])
+                        keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=settings["keep_original_checkbox"])
+                        threshold_slider = gr.Slider(0.01, 0.5, value=settings["threshold_slider"], step=0.01, label="Auto-Editor Volume Threshold")
+                        margin_slider = gr.Slider(0.0, 2.0, value=settings["margin_slider"], step=0.1, label="Auto-Editor Margin (seconds)")
+
+                        normalize_audio_checkbox = gr.Checkbox(label="Normalize with ffmpeg (loudness/peak)", value=settings["normalize_audio_checkbox"])
+                        normalize_method_dropdown = gr.Dropdown(
+                            choices=["ebu", "peak"], value=settings["normalize_method_dropdown"], label="Normalization Method"
+                        )
+                        normalize_level_slider = gr.Slider(
+                            -70, -5, value=settings["normalize_level_slider"], step=1, label="EBU Target Integrated Loudness (I, dB, ebu only)"
+                        )
+                        normalize_tp_slider = gr.Slider(
+                            -9, 0, value=settings["normalize_tp_slider"], step=1, label="EBU True Peak (TP, dB, ebu only)"
+                        )
+                        normalize_lra_slider = gr.Slider(
+                            1, 50, value=settings["normalize_lra_slider"], step=1, label="EBU Loudness Range (LRA, ebu only)"
+                        )
+
+
+                        sound_words_field = gr.Textbox(
+                            label="Remove/Replace Words/Sounds (comma/newline separated or 'sound=>replacement')",
+                            lines=2,
+                            info="Examples: sss, ss, ahh=>um, hmm (removes/replace as standalone or quoted; not in words)",
+                            value=settings["sound_words_field"]
+                        )
+
+                        output_audio = gr.Files(label="Download Final Audio File(s)")
+                        audio_dropdown = gr.Dropdown(label="Click to Preview Any Generated File")
+                        audio_preview = gr.Audio(label="Audio Preview", interactive=True)
+                        audio_dropdown.change(fn=update_audio_preview, inputs=audio_dropdown, outputs=audio_preview)
+
+            def collect_ui_settings(*vals):
+                keys = [
+                    "text_input",
+                    "exaggeration_slider",
+                    "temp_slider",
+                    "seed_input",
+                    "cfg_weight_slider",
+                    "use_auto_editor_checkbox",
+                    "threshold_slider",
+                    "margin_slider",
+                    "export_format_checkboxes",
+                    "enable_batching_checkbox",
+                    "to_lowercase_checkbox",
+                    "normalize_spacing_checkbox",
+                    "fix_dot_letters_checkbox",
+                    "keep_original_checkbox",
+                    "smart_batch_short_sentences_checkbox",
+                    "disable_watermark_checkbox",
+                    "num_generations_input",
+                    "normalize_audio_checkbox",
+                    "normalize_method_dropdown",
+                    "normalize_level_slider",
+                    "normalize_tp_slider",
+                    "normalize_lra_slider",
+                    "num_candidates_slider",
+                    "max_attempts_slider",
+                    "bypass_whisper_checkbox",
+                    "whisper_model_dropdown",
+                    "enable_parallel_checkbox",
+                    "num_parallel_workers_slider",
+                    "use_longest_transcript_on_fail_checkbox",
+                    "sound_words_field",
+                    "use_faster_whisper_checkbox",
+                    "separate_files_checkbox",
+                ]
+                if len(keys) != len(vals):
+                    raise ValueError(f"[SETTINGS ERROR] collect_ui_settings: Number of values ({len(vals)}) does not match keys ({len(keys)})!")
+                mapping = dict(zip(keys, vals))
+                save_settings(mapping)
+                return
+
+            run_button.click(
+                fn=lambda *args: (
+                    collect_ui_settings(*([args[0]] + list(args[3:]))),  # text_input + rest of option fields (skipping file/audio)
+                    generate_and_preview(*args)
+                )[1],
+                inputs=[
+                    text_input,                   # 0
+                    text_file_input,              # 1
+                    ref_audio_input,              # 2
+                    exaggeration_slider,          # 3
+                    temp_slider,                  # 4
+                    seed_input,                   # 5
+                    cfg_weight_slider,            # 6
+                    use_auto_editor_checkbox,     # 7
+                    threshold_slider,             # 8
+                    margin_slider,                # 9
+                    export_format_checkboxes,     #10
+                    enable_batching_checkbox,     #11
+                    to_lowercase_checkbox,        #12
+                    normalize_spacing_checkbox,   #13
+                    fix_dot_letters_checkbox,     #14
+                    keep_original_checkbox,       #15
+                    smart_batch_short_sentences_checkbox,#16
+                    disable_watermark_checkbox,   #17
+                    num_generations_input,        #18
+                    normalize_audio_checkbox,     #19
+                    normalize_method_dropdown,    #20
+                    normalize_level_slider,       #21
+                    normalize_tp_slider,          #22
+                    normalize_lra_slider,         #23
+                    num_candidates_slider,        #24
+                    max_attempts_slider,          #25
+                    bypass_whisper_checkbox,      #26
+                    whisper_model_dropdown,       #27
+                    enable_parallel_checkbox,     #28
+                    num_parallel_workers_slider,  #29
+                    use_longest_transcript_on_fail_checkbox, #30
+                    sound_words_field,            #31
+                    use_faster_whisper_checkbox,  #32
+                    separate_files_checkbox       #33
+                ],
+                outputs=[output_audio, audio_dropdown, audio_preview],
+            )
+
+
+            # === VC TAB: Voice Conversion Tab ===
+            with gr.Tab("Voice Conversion (VC)"):
+                gr.Markdown("## Voice Conversion\nConvert one speaker's voice to sound like another speaker using a target/reference voice audio.")
+                with gr.Row():
+                    vc_input_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input Audio (to convert)")
+                    vc_target_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Target Voice Audio")
+                vc_convert_btn = gr.Button("Run Voice Conversion")
+                vc_output = gr.Audio(label="Converted Audio (Output)", type="numpy")
+
+                def _vc_wrapper(input_audio_path, target_voice_audio_path, disable_watermark):
+                    # Defensive: None means Gradio didn't get file yet
+                    if not input_audio_path or not os.path.exists(input_audio_path):
+                        raise gr.Error("Please upload or record an input audio file.")
+                    if not target_voice_audio_path or not os.path.exists(target_voice_audio_path):
+                        raise gr.Error("Please upload or record a target/reference voice audio file.")
+                    sr, out_wav = voice_conversion(input_audio_path, target_voice_audio_path, disable_watermark=disable_watermark)
+                    return (sr, out_wav)
+
+                vc_convert_btn.click(
+                fn=_vc_wrapper,
+                inputs=[vc_input_audio, vc_target_audio, disable_watermark_checkbox],
+                outputs=vc_output,
+                )
+              
+     
         with gr.Accordion("Show Help / Instructions", open=False):
             gr.Markdown(
             """
