@@ -1155,7 +1155,8 @@ def main():
                     vc_input_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input Audio (to convert)")
                     vc_target_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Target Voice Audio")
                 vc_convert_btn = gr.Button("Run Voice Conversion")
-                vc_output = gr.Audio(label="Converted Audio (Output)", type="numpy")
+                vc_output_files = gr.Files(label="Converted VC Audio File(s)")
+                vc_output_audio = gr.Audio(label="VC Output Preview", interactive=True)
 
                 def _vc_wrapper(input_audio_path, target_voice_audio_path, disable_watermark):
                     # Defensive: None means Gradio didn't get file yet
@@ -1163,15 +1164,25 @@ def main():
                         raise gr.Error("Please upload or record an input audio file.")
                     if not target_voice_audio_path or not os.path.exists(target_voice_audio_path):
                         raise gr.Error("Please upload or record a target/reference voice audio file.")
-                    sr, out_wav = voice_conversion(input_audio_path, target_voice_audio_path, disable_watermark=disable_watermark)
-                    return (sr, out_wav)
+
+                    sr, out_wav = voice_conversion(
+                        input_audio_path,
+                        target_voice_audio_path,
+                        disable_watermark=disable_watermark
+                    )
+                    os.makedirs("output", exist_ok=True)
+                    base = os.path.splitext(os.path.basename(input_audio_path))[0]
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")[:-3]
+                    out_path = f"output/{base}_vc_{timestamp}.wav"
+                    sf.write(out_path, out_wav, sr)
+                    return [out_path], out_path  # Files and preview
 
                 vc_convert_btn.click(
-                fn=_vc_wrapper,
-                inputs=[vc_input_audio, vc_target_audio, disable_watermark_checkbox],
-                outputs=vc_output,
+                    fn=_vc_wrapper,
+                    inputs=[vc_input_audio, vc_target_audio, disable_watermark_checkbox],
+                    outputs=[vc_output_files, vc_output_audio],
                 )
-              
+                                         
      
         with gr.Accordion("Show Help / Instructions", open=False):
             gr.Markdown(
