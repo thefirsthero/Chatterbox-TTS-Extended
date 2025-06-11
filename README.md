@@ -17,6 +17,7 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 - [Whisper Sync & Validation](#whisper-sync--validation)
 - [Parallel Processing & Performance](#parallel-processing--performance)
 - [Persistent Settings](#persistent-settings)
+- [Voice Conversion](#-voice-conversion-vc)
 - [Tips & Troubleshooting](#tips--troubleshooting)
 - [Installation](#-installation)
 
@@ -55,6 +56,15 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 - **Automatic Lowercasing:** Ensures consistent pronunciation by normalizing to lowercase.
 - **Whitespace Normalization:** Removes excessive spaces, newlines, and cleans the input.
 - **Abbreviation Correction:** Automatically transforms e.g. `"J.R.R."` ➔ `"J R R"` for correct pronunciation of initials.
+
+
+### 📄 Generate Separate Audio Files Per Text File
+You can now **batch-process multiple text files** and choose whether you want one combined audio or a separate audio output for each file:
+- Upload any number of `.txt` files in the main TTS tab.
+- To synthesize each to its own audio, check **"Generate separate audio files per text file"**.
+- To merge all files, leave it unchecked.
+
+**Tip:** Output files are named for easy sorting and reproducibility.
 
 ---
 
@@ -210,17 +220,6 @@ Convert any voice to sound like another! The new **Voice Conversion** tab enable
 - Handles long input audio by automatically splitting into overlapping chunks and recombining with crossfades for smooth transitions.
 - Output matches the model’s sample rate for best fidelity.
 - Chunks and processing are fully automated; no user tuning required.
-
----
-
-### 📄 Generate Separate Audio Files Per Text File
-
-You can now **batch-process multiple text files** and choose whether you want one combined audio or a separate audio output for each file:
-- Upload any number of `.txt` files in the main TTS tab.
-- To synthesize each to its own audio, check **"Generate separate audio files per text file"**.
-- To merge all files, leave it unchecked.
-
-**Tip:** Output files are named for easy sorting and reproducibility.
 
 ---
 
