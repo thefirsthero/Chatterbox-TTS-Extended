@@ -24,24 +24,26 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 ---
 ### **Feature Coverage Table**
 
-| Feature                           | UI Exposed? | Script Logic   |
-|------------------------------------|-------------|---------------|
-| Text input (box + multi-file)      | ✔           | Yes           |
-| Reference audio                    | ✔           | Yes           |
-| Separate/merge file output         | ✔           | Yes           |
-| Emotion, CFG, temperature, seed    | ✔           | Yes           |
-| Batch/smart-append                 | ✔           | Yes           |
-| Sound word remove/replace          | ✔           | Yes           |
-| Auto-Editor post-processing        | ✔           | Yes           |
-| FFmpeg normalization (EBU/peak)    | ✔           | Yes           |
-| WAV/MP3/FLAC export                | ✔           | Yes           |
-| Watermark disabled                 | ❌           | Yes           |
-| Candidates per chunk, retries      | ✔           | Yes           |
-| Parallelism (workers)              | ✔           | Yes           |
-| Whisper/faster-whisper backend     | ✔           | Yes           |
-| Persistent settings (JSON)         | ✔           | Yes           |
-| Help/Instructions                  | ✔ (Accordion) | Yes         |
-| Audio preview & download           | ✔           | Yes           |
+| Feature                           | UI Exposed?       | Script Logic   |
+|------------------------------------|-------------------|---------------|
+| Text input (box + multi-file)      | ✔                 | Yes           |
+| Reference audio                    | ✔                 | Yes           |
+| Separate/merge file output         | ✔                 | Yes           |
+| Emotion, CFG, temperature, seed    | ✔                 | Yes           |
+| Batch/smart-append                 | ✔                 | Yes           |
+| Sound word remove/replace          | ✔                 | Yes           |
+| Auto-Editor post-processing        | ✔                 | Yes           |
+| FFmpeg normalization (EBU/peak)    | ✔                 | Yes           |
+| WAV/MP3/FLAC export                | ✔                 | Yes           |
+| Watermark disabled                 | ❌                | Yes           |
+| Candidates per chunk, retries      | ✔                 | Yes           |
+| Parallelism (workers)              | ✔                 | Yes           |
+| Whisper/faster-whisper backend     | ✔                 | Yes           |
+| Persistent settings (JSON)         | ✔                 | Yes           |
+| Help/Instructions                  | ✔ (Accordion)     | Yes           |
+| Audio preview & download           | ✔                 | Yes           |
+| Voice Conversion (VC)              | ✔ (VC tab)        | Yes           |
+
 
 ---
 
