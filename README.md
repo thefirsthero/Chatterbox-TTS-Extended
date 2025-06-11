@@ -35,7 +35,7 @@ Chatterbox-TTS-Extended is a *highly advanced*, power-user interface for batch a
 | Auto-Editor post-processing        | ✔           | Yes           |
 | FFmpeg normalization (EBU/peak)    | ✔           | Yes           |
 | WAV/MP3/FLAC export                | ✔           | Yes           |
-| Watermark disable                  | ✔           | Yes           |
+| Watermark disabled                 | ❌           | Yes           |
 | Candidates per chunk, retries      | ✔           | Yes           |
 | Parallelism (workers)              | ✔           | Yes           |
 | Whisper/faster-whisper backend     | ✔           | Yes           |
