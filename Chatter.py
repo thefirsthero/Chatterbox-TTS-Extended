@@ -22,6 +22,7 @@ import nltk
 from nltk.tokenize import sent_tokenize
 from faster_whisper import WhisperModel as FasterWhisperModel
 import json
+import csv
 import soundfile as sf
 from chatterbox.src.chatterbox.vc import ChatterboxVC
 SETTINGS_PATH = "settings.json"
@@ -40,8 +41,46 @@ def load_settings():
         return default_settings()
 
 def save_settings(mapping):
+    # Ensure "whisper_model_dropdown" is always saved as the label, not code
+    whisper_model_map = {
+        "tiny (~1 GB VRAM OpenAI / ~0.5 GB faster-whisper)": "tiny",
+        "base (~1.2–2 GB OpenAI / ~0.7–1 GB faster-whisper)": "base",
+        "small (~2–3 GB OpenAI / ~1.2–1.7 GB faster-whisper)": "small",
+        "medium (~5–8 GB OpenAI / ~2.5–4.5 GB faster-whisper)": "medium",
+        "large (~10–13 GB OpenAI / ~4.5–6.5 GB faster-whisper)": "large"
+    }
+    v = mapping.get("whisper_model_dropdown", "")
+    # If it's already a label, keep it; if it's a code, map to label
+    if v not in whisper_model_map:
+        label = next((k for k, code in whisper_model_map.items() if code == v), v)
+        mapping["whisper_model_dropdown"] = label
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(mapping, f, indent=2)
+        json.dump(mapping, f, indent=2, ensure_ascii=False)
+        
+        
+def save_settings_csv(settings_dict, output_audio_files, csv_path):
+    """
+    Save a dict of settings and a list of output audio files to a one-row CSV.
+    """
+    # Prepare a flattened settings dict for CSV
+    flat_settings = {}
+    for k, v in settings_dict.items():
+        if isinstance(v, (list, tuple)):
+            flat_settings[k] = '|'.join(map(str, v))
+        else:
+            flat_settings[k] = v
+    flat_settings['output_audio_files'] = '|'.join(output_audio_files)
+    with open(csv_path, "w", newline='', encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(flat_settings.keys()))
+        writer.writeheader()
+        writer.writerow(flat_settings)
+
+def save_settings_json(settings_dict, json_path):
+    """
+    Save the settings dict as a JSON file.
+    """
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(settings_dict, f, indent=2, ensure_ascii=False)
         
         
 # === VC TAB (NEW) ===
@@ -151,6 +190,7 @@ In the Land of Mordor where the Shadows lie.""",
         "to_lowercase_checkbox": True,
         "normalize_spacing_checkbox": True,
         "fix_dot_letters_checkbox": True,
+        "remove_reference_numbers_checkbox": True,
         "use_auto_editor_checkbox": False,
         "keep_original_checkbox": False,
         "threshold_slider": 0.06,
@@ -221,6 +261,12 @@ def replace_letter_period_sequences(text: str) -> str:
         letters = cleaned.split('.')
         return ' '.join(letters)
     return re.sub(r'\b(?:[A-Za-z]\.){2,}', replacer, text)
+    
+def remove_inline_reference_numbers(text):
+    # Remove reference numbers after sentence-ending punctuation, but keep the punctuation
+    pattern = r'([.!?\"\'”’)\]])(\d+)(?=\s|$)'
+    return re.sub(pattern, r'\1', text)
+
 
 def split_into_sentences(text):
     # NLTK's Punkt tokenizer handles abbreviations and common English quirks
@@ -521,6 +567,7 @@ def generate_batch_tts(
     to_lowercase: bool,
     normalize_spacing: bool,
     fix_dot_letters: bool,
+    remove_reference_numbers: bool,
     keep_original_wav: bool,
     smart_batch_short_sentences: bool,
     disable_watermark: bool,
@@ -582,7 +629,7 @@ def generate_batch_tts(
                     audio_prompt_path_input,
                     exaggeration_input, temperature_input, seed_num_input, cfgw_input,
                     use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
-                    to_lowercase, normalize_spacing, fix_dot_letters, keep_original_wav,
+                    to_lowercase, normalize_spacing, fix_dot_letters, remove_reference_numbers, keep_original_wav,
                     smart_batch_short_sentences, disable_watermark, num_generations,
                     normalize_audio, normalize_method, normalize_level, normalize_tp,
                     normalize_lra, num_candidates_per_chunk, max_attempts_per_candidate,
@@ -612,7 +659,7 @@ def generate_batch_tts(
             text, input_basename, audio_prompt_path_input,
             exaggeration_input, temperature_input, seed_num_input, cfgw_input,
             use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
-            to_lowercase, normalize_spacing, fix_dot_letters, keep_original_wav,
+            to_lowercase, normalize_spacing, fix_dot_letters, remove_reference_numbers, keep_original_wav,
             smart_batch_short_sentences, disable_watermark, num_generations,
             normalize_audio, normalize_method, normalize_level, normalize_tp,
             normalize_lra, num_candidates_per_chunk, max_attempts_per_candidate,
@@ -626,7 +673,7 @@ def generate_batch_tts(
             text, input_basename, audio_prompt_path_input,
             exaggeration_input, temperature_input, seed_num_input, cfgw_input,
             use_auto_editor, ae_threshold, ae_margin, export_formats, enable_batching,
-            to_lowercase, normalize_spacing, fix_dot_letters, keep_original_wav,
+            to_lowercase, normalize_spacing, fix_dot_letters, remove_reference_numbers, keep_original_wav,
             smart_batch_short_sentences, disable_watermark, num_generations,
             normalize_audio, normalize_method, normalize_level, normalize_tp,
             normalize_lra, num_candidates_per_chunk, max_attempts_per_candidate,
@@ -650,6 +697,7 @@ def process_text_for_tts(
     to_lowercase,
     normalize_spacing,
     fix_dot_letters,
+    remove_reference_numbers,
     keep_original_wav,
     smart_batch_short_sentences,
     disable_watermark,
@@ -689,6 +737,10 @@ def process_text_for_tts(
         text = normalize_whitespace(text)
     if fix_dot_letters:
         text = replace_letter_period_sequences(text)
+    if remove_reference_numbers:
+        text = remove_inline_reference_numbers(text)
+
+    print("[DEBUG] After reference number removal:", repr(text))  # <--- ADD THIS LINE HERE
 
     os.makedirs("temp", exist_ok=True)
     os.makedirs("output", exist_ok=True)
@@ -697,6 +749,7 @@ def process_text_for_tts(
 
     sentences = split_into_sentences(text)
     print(f"\033[32m[DEBUG] Split text into {len(sentences)} sentences.\033[0m")
+    
     if enable_batching:
         sentence_groups = group_sentences(sentences, max_chars=400)
     elif smart_batch_short_sentences:
@@ -954,6 +1007,61 @@ def process_text_for_tts(
                 os.remove(wav_output)
             except Exception as e:
                 print(f"[ERROR] Could not remove temp wav file: {e}")
+                
+            # === Save settings CSV and JSON for this generation ===
+        # Only include relevant fields and NOT the raw text_input
+        settings_to_save = {
+            "text_input": "",  # Intentionally blank for privacy
+            "exaggeration_slider": exaggeration_input,
+            "temp_slider": temperature_input,
+            "seed_input": this_seed,
+            "cfg_weight_slider": cfgw_input,
+            "use_auto_editor_checkbox": use_auto_editor,
+            "threshold_slider": ae_threshold,
+            "margin_slider": ae_margin,
+            "export_format_checkboxes": export_formats,
+            "enable_batching_checkbox": enable_batching,
+            "to_lowercase_checkbox": to_lowercase,
+            "normalize_spacing_checkbox": normalize_spacing,
+            "fix_dot_letters_checkbox": fix_dot_letters,
+            "remove_reference_numbers_checkbox": remove_reference_numbers,
+            "keep_original_checkbox": keep_original_wav,
+            "smart_batch_short_sentences_checkbox": smart_batch_short_sentences,
+            "disable_watermark_checkbox": disable_watermark,
+            "num_generations_input": num_generations,
+            "normalize_audio_checkbox": normalize_audio,
+            "normalize_method_dropdown": normalize_method,
+            "normalize_level_slider": normalize_level,
+            "normalize_tp_slider": normalize_tp,
+            "normalize_lra_slider": normalize_lra,
+            "num_candidates_slider": num_candidates_per_chunk,
+            "max_attempts_slider": max_attempts_per_candidate,
+            "bypass_whisper_checkbox": bypass_whisper_checking,
+            "whisper_model_dropdown": next((k for k, v in whisper_model_map.items() if v == whisper_model_name), whisper_model_name),
+            "enable_parallel_checkbox": enable_parallel,
+            "num_parallel_workers_slider": num_parallel_workers,
+            "use_longest_transcript_on_fail_checkbox": use_longest_transcript_on_fail,
+            "sound_words_field": sound_words_field,
+            "use_faster_whisper_checkbox": use_faster_whisper,
+            "separate_files_checkbox": False,  # Or True, if that option was used for this job
+            "input_basename": input_basename,  # Additional info, optional
+            "audio_prompt_path_input": audio_prompt_path_input,  # Additional info, optional
+            "generation_time": datetime.datetime.now().isoformat(),
+            #"output_audio_files": gen_outputs,  # Add this so each settings.json also points to its outputs!
+        }
+
+        # Name settings file after the first output audio file (base)
+        base_out = gen_outputs[0].rsplit('.', 1)[0]  # E.g., output/audiofile_gen1_seedXXXXX
+        csv_path = base_out + ".settings.csv"
+        json_path = base_out + ".settings.json"
+
+        # Save CSV (no output_audio_files in dict)
+        save_settings_csv(settings_to_save, gen_outputs, csv_path)
+
+        # Save JSON (add output_audio_files to dict)
+        settings_for_json = settings_to_save.copy()
+        settings_for_json["output_audio_files"] = gen_outputs
+        save_settings_json(settings_for_json, json_path)
 
     print(f"\033[1;36m[DEBUG] All generations complete. Outputs:\n\033[0m" + "\n".join(output_paths))
     return output_paths
@@ -1029,6 +1137,10 @@ def main():
                         to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=settings["to_lowercase_checkbox"])
                         normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=settings["normalize_spacing_checkbox"])
                         fix_dot_letters_checkbox = gr.Checkbox(label="Convert 'J.R.R.' style input to 'J R R'", value=settings["fix_dot_letters_checkbox"])
+                        remove_reference_numbers_checkbox = gr.Checkbox(
+                            label="Remove inline reference numbers after sentences (e.g., '.188', '.”3')",
+                            value=settings.get("remove_reference_numbers_checkbox", True)
+                        )
                         
                         use_auto_editor_checkbox = gr.Checkbox(label="Post-process with Auto-Editor", value=settings["use_auto_editor_checkbox"])
                         keep_original_checkbox = gr.Checkbox(label="Keep original WAV (before Auto-Editor)", value=settings["keep_original_checkbox"])
@@ -1077,6 +1189,7 @@ def main():
                     "to_lowercase_checkbox",
                     "normalize_spacing_checkbox",
                     "fix_dot_letters_checkbox",
+                    "remove_reference_numbers_checkbox",
                     "keep_original_checkbox",
                     "smart_batch_short_sentences_checkbox",
                     "disable_watermark_checkbox",
@@ -1124,6 +1237,7 @@ def main():
                     to_lowercase_checkbox,        #12
                     normalize_spacing_checkbox,   #13
                     fix_dot_letters_checkbox,     #14
+                    remove_reference_numbers_checkbox,   #15
                     keep_original_checkbox,       #15
                     smart_batch_short_sentences_checkbox,#16
                     disable_watermark_checkbox,   #17
