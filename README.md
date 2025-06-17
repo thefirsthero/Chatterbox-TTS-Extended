@@ -27,8 +27,8 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 - [Persistent Settings & UI](#persistent-settings--ui)
 - [🎙️ Voice Conversion (VC) Tab](#️-voice-conversion-vc-tab)
 - [Tips & Troubleshooting](#tips--troubleshooting)
-- [Installation](#installation)
-- [Feedback & Contributions](#feedback--contributions)
+- [Installation](#-installation)
+- [Feedback & Contributions](#-feedback--contributions)
 
 ---
 
