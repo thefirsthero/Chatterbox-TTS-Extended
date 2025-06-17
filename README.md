@@ -223,7 +223,7 @@ pip install --force-reinstall -r requirements.txt
 Run:
 
 ```bash
-python Chatter300_final_multi_gen_soundword.py
+python Chatter.py
 ```
 
 If FFMPEG isn’t in your PATH, put the executable in the same directory as your script.
