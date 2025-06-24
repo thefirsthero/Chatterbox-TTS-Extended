@@ -73,9 +73,10 @@ class ChatterboxVC:
 
         return cls.from_local(Path(local_path).parent, device)
 
-    def set_target_voice(self, wav_fpath):
+    def set_target_voice(self, wav_fpath, pitch_shift):
         ## Load reference wav
         s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
+        s3gen_ref_wav = librosa.effects.pitch_shift(y=s3gen_ref_wav, sr=S3GEN_SR, n_steps=pitch_shift)
 
         s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]
         self.ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR, device=self.device)
@@ -85,9 +86,10 @@ class ChatterboxVC:
         audio,
         target_voice_path=None,
         apply_watermark=True,  # New argument!
+        pitch_shift=0
     ):
         if target_voice_path:
-            self.set_target_voice(target_voice_path)
+            self.set_target_voice(target_voice_path, pitch_shift)
         else:
             assert self.ref_dict is not None, "Please `prepare_conditionals` first or specify `target_voice_path`"
 
