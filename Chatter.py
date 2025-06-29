@@ -274,7 +274,7 @@ def replace_letter_period_sequences(text: str) -> str:
     
 def remove_inline_reference_numbers(text):
     # Remove reference numbers after sentence-ending punctuation, but keep the punctuation
-    pattern = r'([.!?\"\'”’)\]])(\d+)(?=\s|$)'
+    pattern = r'([.!?,\"\'”’)\]])(\d+)(?=\s|$)'
     return re.sub(pattern, r'\1', text)
 
 
@@ -282,7 +282,53 @@ def split_into_sentences(text):
     # NLTK's Punkt tokenizer handles abbreviations and common English quirks
     return sent_tokenize(text)
 
-def group_sentences(sentences, max_chars=400):
+def split_long_sentence(sentence, max_len=300, seps=None):
+    """
+    Recursively split a sentence into chunks of <= max_len using a sequence of separators.
+    Tries each separator in order, splitting further as needed.
+    """
+    if seps is None:
+        seps = [';', ':', '-', ',', ' ']
+
+    sentence = sentence.strip()
+    if len(sentence) <= max_len:
+        return [sentence]
+
+    if not seps:
+        # Fallback: force split every max_len chars
+        return [sentence[i:i+max_len].strip() for i in range(0, len(sentence), max_len)]
+
+    sep = seps[0]
+    parts = sentence.split(sep)
+
+    if len(parts) == 1:
+        # Separator not found, try next separator
+        return split_long_sentence(sentence, max_len, seps=seps[1:])
+
+    # Now recursively process each part, joining separator back except for the first
+    chunks = []
+    current = parts[0].strip()
+    for part in parts[1:]:
+        candidate = (current + sep + part).strip()
+        if len(candidate) > max_len:
+            # Split current chunk further with the next separator
+            chunks.extend(split_long_sentence(current.strip(), max_len, seps=seps[1:]))
+            current = part.strip()
+        else:
+            current = candidate
+    # Process the last current
+    if current:
+        if len(current) > max_len:
+            chunks.extend(split_long_sentence(current.strip(), max_len, seps=seps[1:]))
+        else:
+            chunks.append(current.strip())
+
+    return chunks
+
+    # Fallback: force split every max_len chars
+    #return [sentence[i:i+max_len].strip() for i in range(0, len(sentence), max_len)]
+
+def group_sentences(sentences, max_chars=300):
     chunks = []
     current_chunk = []
     current_length = 0
@@ -296,10 +342,18 @@ def group_sentences(sentences, max_chars=400):
 
         print(f"\033[32m[DEBUG] Processing sentence: len={sentence_len}, content='\033[33m{sentence}...'\033[0m")
 
-        if sentence_len > 500:
-            print(f"\033[32m[DEBUG] Truncating sentence from {sentence_len} to 500 chars\033[0m")
-            sentence = sentence[:500]
-            sentence_len = 500
+        if sentence_len > 300:
+            print(f"\033[32m[DEBUG] Splitting overlong sentence of {sentence_len} chars\033[0m")
+            for chunk in split_long_sentence(sentence, 300):
+                if len(chunk) > max_chars:
+                    # For extremely long non-breakable segments, just chunk them
+                    for i in range(0, len(chunk), max_chars):
+                        chunks.append(chunk[i:i+max_chars])
+                else:
+                    chunks.append(chunk)
+            current_chunk = []
+            current_length = 0
+            continue  # Skip the rest of the loop for this sentence
 
         if sentence_len > max_chars:
             if current_chunk:
@@ -331,7 +385,7 @@ def group_sentences(sentences, max_chars=400):
 
     return chunks
 
-def smart_append_short_sentences(sentences, max_chars=400):
+def smart_append_short_sentences(sentences, max_chars=300):
     new_groups = []
     i = 0
     while i < len(sentences):
@@ -392,7 +446,7 @@ def normalize_for_compare_all_punct(text):
     text = re.sub(r'\s+', ' ', text)
     return text.lower().strip()
 
-def fuzzy_match(text1, text2, threshold=0.95):
+def fuzzy_match(text1, text2, threshold=1.0):
     t1 = normalize_for_compare_all_punct(text1)
     t2 = normalize_for_compare_all_punct(text2)
     seq = difflib.SequenceMatcher(None, t1, t2)
@@ -400,7 +454,7 @@ def fuzzy_match(text1, text2, threshold=0.95):
 
 def parse_sound_word_field(user_input):
     # Accepts comma or newline separated, allows 'sound=>replacement'
-    lines = [l.strip() for l in user_input.replace(',', '\n').split('\n') if l.strip()]
+    lines = [l.strip() for l in user_input.split('\n') if l.strip()]
     result = []
     for line in lines:
         if '=>' in line:
@@ -426,28 +480,33 @@ def smart_remove_sound_words(text, sound_words):
                 text,
                 flags=re.IGNORECASE
             )
-            # 3. Replace as whole word (not in quotes)
-            text = re.sub(
-                r'\b%s\b' % re.escape(pattern),
-                replacement,
-                text,
-                flags=re.IGNORECASE
-            )
+            # If pattern is a punctuation character (like dash), replace all
+            if all(char in "-–—" for char in pattern.strip()):
+                text = re.sub(re.escape(pattern), replacement, text)
+            else:
+                # 3. Replace as whole word (not in quotes)
+                text = re.sub(
+                    r'\b%s\b' % re.escape(pattern),
+                    replacement,
+                    text,
+                    flags=re.IGNORECASE
+                )
         else:
-            # Remove word plus adjacent punctuation/spaces/quotes
+            # Remove only the pattern itself, not adjacent spaces
             text = re.sub(
-                r'([\'"]?)(,? ?){0,1}%s(,? ?){0,1}([\'"]?)' % re.escape(pattern),
+                r'%s' % re.escape(pattern),
                 '',
                 text,
                 flags=re.IGNORECASE
             )
-            text = re.sub(
-                r'(,? ?){0,1}\b%s\b(,? ?){0,1}' % re.escape(pattern),
-                '',
-                text,
-                flags=re.IGNORECASE
-            )
-    # Clean up doubled-up commas and extra spaces
+
+    # --- Fix accidental joining of words caused by quote removal ---
+    # Add a space if a letter is next to a letter and was separated by removed quote
+    #text = re.sub(r'(\w)([’\'"“”‘’])(\w)', r'\1 \3', text)
+    # Add a space between lowercase and uppercase, likely joined words (e.g., rainbowPride)
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+
+    # --- Clean up doubled-up commas and extra spaces ---
     text = re.sub(r'([,\s]+,)+', ',', text)
     text = re.sub(r',\s*,+', ',', text)
     text = re.sub(r'\s{2,}', ' ', text)
@@ -455,6 +514,7 @@ def smart_remove_sound_words(text, sound_words):
     text = re.sub(r'(^|[\.!\?]\s*),+', r'\1', text)
     text = re.sub(r',+\s*([\.!\?])', r'\1', text)
     return text.strip()
+
 
 def whisper_check_mp(candidate_path, target_text, whisper_model, use_faster_whisper=False):
     import difflib
@@ -501,9 +561,9 @@ def process_one_chunk(
         if not sentence_group.strip():
             print(f"\033[32m[DEBUG] Skipping empty sentence group at index {idx}\033[0m")
             return (idx, candidates)
-        if len(sentence_group) > 500:
-            print(f"\033[32m[DEBUG] Skipping suspiciously long sentence group at index {idx} (len={len(sentence_group)})\033[0m")
-            return (idx, candidates)
+        if len(sentence_group) > 300:
+            print(f"\033[33m[WARNING] Very long sentence group at index {idx} (len={len(sentence_group)}); proceeding anyway.\033[0m")
+
         print(f"\033[32m[DEBUG] Processing group {idx}: len={len(sentence_group)}:\033[33m {sentence_group}\033[0m")
 
         for cand_idx in range(num_candidates_per_chunk):
@@ -759,11 +819,38 @@ def process_text_for_tts(
 
     sentences = split_into_sentences(text)
     print(f"\033[32m[DEBUG] Split text into {len(sentences)} sentences.\033[0m")
-    
+
+    def enforce_min_chunk_length(chunks, min_len=20, max_len=300):
+        out = []
+        i = 0
+        while i < len(chunks):
+            current = chunks[i].strip()
+            if len(current) >= min_len or i == len(chunks) - 1:
+                out.append(current)
+                i += 1
+            else:
+                # Try to merge with the next chunk if possible
+                if i + 1 < len(chunks):
+                    merged = current + " " + chunks[i + 1]
+                    if len(merged) <= max_len:
+                        out.append(merged)
+                        i += 2
+                    else:
+                        out.append(current)
+                        i += 1
+                else:
+                    out.append(current)
+                    i += 1
+        return out
+
+    sentence_groups = None
     if enable_batching:
-        sentence_groups = group_sentences(sentences, max_chars=400)
+        sentence_groups = group_sentences(sentences, max_chars=300)
+        if smart_batch_short_sentences:  # NEW: now works as post-processing!
+            sentence_groups = enforce_min_chunk_length(sentence_groups)
     elif smart_batch_short_sentences:
         sentence_groups = smart_append_short_sentences(sentences)
+        sentence_groups = enforce_min_chunk_length(sentence_groups)
     else:
         sentence_groups = sentences
 
@@ -775,7 +862,7 @@ def process_text_for_tts(
             this_seed = int(seed_num_input) + gen_index
         set_seed(this_seed)
 
-        print(f"\033[32m[DEBUG] Starting generation {gen_index+1}/{num_generations} with seed {this_seed}\033[0m")
+        print(f"\033[43m[DEBUG] Starting generation {gen_index+1}/{num_generations} with seed {this_seed}\033[0m")
 
         chunk_candidate_map = {}
         waveform_list = []  # Initialize waveform_list here to ensure it’s defined
@@ -1073,7 +1160,7 @@ def process_text_for_tts(
         settings_for_json["output_audio_files"] = gen_outputs
         save_settings_json(settings_for_json, json_path)
 
-    print(f"\033[1;36m[DEBUG] All generations complete. Outputs:\n\033[0m" + "\n".join(output_paths))
+    print(f"\033[1;36m[DEBUG] \33[6;4;3;34;102mALL GENERATIONS COMPLETE. Outputs:\033[0m\n" + "\n".join(output_paths))
     return output_paths
 
 # ----- UI SECTION -----
@@ -1166,7 +1253,7 @@ def main():
                         )
                         disable_watermark_checkbox = gr.Checkbox(label="Disable Perth Watermark", value=settings["disable_watermark_checkbox"], visible=False)
                         num_generations_input = gr.Number(value=settings["num_generations_input"], precision=0, label="Number of Generations")
-                        num_candidates_slider = gr.Slider(1, 10, value=settings["num_candidates_slider"], step=1, label="Number of Candidates Per Chunk (after batching)")
+                        num_candidates_slider = gr.Slider(1, 10, value=settings["num_candidates_slider"], step=1, label="Number of Candidates Per Chunk (after batching) - [reduces the chance of artifacts and hallucinations]")
                         max_attempts_slider = gr.Slider(1, 10, value=settings["max_attempts_slider"], step=1, label="Max Attempts Per Candidate (Whisper check retries)")
                         bypass_whisper_checkbox = gr.Checkbox(label="Bypass Whisper Checking (pick shortest candidate regardless of transcription)", value=settings["bypass_whisper_checkbox"])
                         whisper_model_dropdown = gr.Dropdown(
@@ -1193,7 +1280,7 @@ def main():
                         cfg_weight_slider = gr.Slider(0.1, 1.0, value=settings["cfg_weight_slider"], step=0.01, label="CFG Weight/Pace")
                         temp_slider = gr.Slider(0.01, 5.0, value=settings["temp_slider"], step=0.05, label="Temperature")
                         seed_input = gr.Number(value=settings["seed_input"], label="Random Seed (0 for random)")
-                        enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 400 chars)", value=settings["enable_batching_checkbox"])
+                        enable_batching_checkbox = gr.Checkbox(label="Enable Sentence Batching (Max 300 chars)", value=settings["enable_batching_checkbox"])
                         smart_batch_short_sentences_checkbox = gr.Checkbox(label="Smart-append short sentences (if batching is off)", value=settings["smart_batch_short_sentences_checkbox"])
                         to_lowercase_checkbox = gr.Checkbox(label="Convert input text to lowercase", value=settings["to_lowercase_checkbox"])
                         normalize_spacing_checkbox = gr.Checkbox(label="Normalize spacing (remove extra newlines and spaces)", value=settings["normalize_spacing_checkbox"])
@@ -1224,7 +1311,7 @@ def main():
 
 
                         sound_words_field = gr.Textbox(
-                            label="Remove/Replace Words/Sounds (comma/newline separated or 'sound=>replacement')",
+                            label="Remove/Replace Words/Sounds (newline separated or 'sound=>replacement')",
                             lines=2,
                             info="Examples: sss, ss, ahh=>um, hmm (removes/replace as standalone or quoted; not in words)",
                             value=settings["sound_words_field"]
@@ -1449,7 +1536,7 @@ def main():
             ---
 
             ### **Text Processing Options**
-            - **Enable Sentence Batching (Max 400 chars):**  
+            - **Enable Sentence Batching (Max 300 chars):**  
               Chunks the input into groups of sentences, up to the specified maximum character length per batch.  
               - *Improves natural phrasing and makes TTS more efficient.*
             - **Smart-Append Short Sentences (if batching is off):**  
