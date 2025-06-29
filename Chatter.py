@@ -105,7 +105,7 @@ def get_or_load_vc_model():
 
 
 
-def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, overlap_sec=0.1, disable_watermark=True):
+def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, overlap_sec=0.1, disable_watermark=True, pitch_shift=0):
     import soundfile as sf
     import librosa
     vc_model = get_or_load_vc_model()
@@ -124,7 +124,8 @@ def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, ov
         wav_out = vc_model.generate(
             input_audio_path,
             target_voice_path=target_voice_audio_path,
-            apply_watermark=not disable_watermark
+            apply_watermark=not disable_watermark,
+            pitch_shift=pitch_shift
         )
         out_wav = wav_out.squeeze(0).numpy()
         return model_sr, out_wav
@@ -143,7 +144,8 @@ def voice_conversion(input_audio_path, target_voice_audio_path, chunk_sec=60, ov
         out_chunk = vc_model.generate(
             temp_chunk_path,
             target_voice_path=target_voice_audio_path,
-            apply_watermark=not disable_watermark
+            apply_watermark=not disable_watermark,
+            pitch_shift=pitch_shift
         )
         out_chunk_np = out_chunk.squeeze(0).numpy()
         out_chunks.append(out_chunk_np)
@@ -619,7 +621,6 @@ def generate_and_preview(*args):
 def update_audio_preview(selected_path):
     return selected_path
 
-    
 @spaces.GPU
 def generate_batch_tts(
     text: str,
@@ -1463,11 +1464,12 @@ def main():
                 with gr.Row():
                     vc_input_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input Audio (to convert)")
                     vc_target_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Target Voice Audio")
+                vc_pitch_shift = gr.Number(value=0, label="Pitch", step=0.5, interactive=True)
                 vc_convert_btn = gr.Button("Run Voice Conversion")
                 vc_output_files = gr.Files(label="Converted VC Audio File(s)")
                 vc_output_audio = gr.Audio(label="VC Output Preview", interactive=True)
 
-                def _vc_wrapper(input_audio_path, target_voice_audio_path, disable_watermark):
+                def _vc_wrapper(input_audio_path, target_voice_audio_path, disable_watermark, pitch_shift):
                     # Defensive: None means Gradio didn't get file yet
                     if not input_audio_path or not os.path.exists(input_audio_path):
                         raise gr.Error("Please upload or record an input audio file.")
@@ -1477,7 +1479,8 @@ def main():
                     sr, out_wav = voice_conversion(
                         input_audio_path,
                         target_voice_audio_path,
-                        disable_watermark=disable_watermark
+                        disable_watermark=disable_watermark,
+                        pitch_shift=pitch_shift
                     )
                     os.makedirs("output", exist_ok=True)
                     base = os.path.splitext(os.path.basename(input_audio_path))[0]
@@ -1488,11 +1491,10 @@ def main():
 
                 vc_convert_btn.click(
                     fn=_vc_wrapper,
-                    inputs=[vc_input_audio, vc_target_audio, disable_watermark_checkbox],
+                    inputs=[vc_input_audio, vc_target_audio, disable_watermark_checkbox, vc_pitch_shift],
                     outputs=[vc_output_files, vc_output_audio],
                 )
-                                         
-     
+
         with gr.Accordion("Show Help / Instructions", open=False):
             gr.Markdown(
             """
