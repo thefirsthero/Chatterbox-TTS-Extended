@@ -244,8 +244,103 @@ def render_asmr(
     return output_path
 
 
+def batch_render(args) -> None:
+    """
+    Discover every .txt file in --scripts-dir and render each one using the
+    shared locked voice profile. Already-rendered outputs are skipped so the
+    run is safely resumable.
+
+    Output files are written to --output-dir (default: output/batch/) using the
+    same stem as the script file, e.g. scripts/ep01_rain.txt → output/batch/ep01_rain.wav
+    """
+    scripts_dir = args.scripts_dir
+    output_dir = args.output_dir or os.path.join("output", "batch")
+    os.makedirs(output_dir, exist_ok=True)
+
+    script_files = sorted(
+        p for p in (
+            os.path.join(scripts_dir, f)
+            for f in os.listdir(scripts_dir)
+            if f.lower().endswith(".txt")
+        )
+        if os.path.isfile(p)
+    )
+
+    if not script_files:
+        raise ValueError(f"No .txt files found in: {scripts_dir}")
+
+    print(f"[batch] Found {len(script_files)} script(s) in {scripts_dir}")
+
+    results: list[tuple[str, str, str]] = []  # (script, output, status)
+
+    for script_path in script_files:
+        stem = os.path.splitext(os.path.basename(script_path))[0]
+        out_wav = os.path.join(output_dir, f"{stem}.wav")
+        out_mp3 = os.path.join(output_dir, f"{stem}.mp3")
+
+        # Skip if already rendered (wav or mp3 present)
+        if os.path.isfile(out_wav) or os.path.isfile(out_mp3):
+            print(f"[batch] SKIP (already exists): {stem}")
+            results.append((script_path, out_wav, "skipped"))
+            continue
+
+        print(f"\n[batch] ── Rendering: {stem} ──")
+        with open(script_path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+
+        try:
+            render_asmr(
+                text=text,
+                reference_audio=args.reference_audio,
+                output_path=out_wav,
+                target_minutes=args.target_minutes,
+                exaggeration=args.exaggeration,
+                cfg_weight=args.cfg_weight,
+                temperature=args.temperature,
+                pause_min_ms=args.pause_min_ms,
+                pause_max_ms=args.pause_max_ms,
+                crossfade_ms=args.crossfade_ms,
+                min_chunk_chars=args.min_chunk_chars,
+                max_chunk_chars=args.max_chunk_chars,
+                seed=args.seed,
+                loop_script=args.loop_script,
+                export_mp3=args.export_mp3,
+                temp_drift=args.temp_drift,
+                exaggeration_drift=args.exaggeration_drift,
+                voice_profile_in=args.voice_profile_in,
+                voice_profile_out=None,  # only save profile once, from first run
+            )
+            results.append((script_path, out_wav, "ok"))
+        except Exception as exc:
+            print(f"[batch] ERROR rendering {stem}: {exc}")
+            results.append((script_path, out_wav, f"error: {exc}"))
+
+    # Summary table
+    print("\n╔══ Batch summary " + "═" * 52 + "╗")
+    ok = sum(1 for _, _, s in results if s == "ok")
+    skip = sum(1 for _, _, s in results if s == "skipped")
+    err = sum(1 for _, _, s in results if s.startswith("error"))
+    print(f"  Total: {len(results)}  ✓ ok: {ok}  ⏭ skipped: {skip}  ✗ errors: {err}")
+    print("─" * 70)
+    for script, out, status in results:
+        tag = "✓" if status == "ok" else ("⏭" if status == "skipped" else "✗")
+        print(f"  {tag} {os.path.basename(script):<40} → {os.path.basename(out)}")
+    print("╚" + "═" * 69 + "╝\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Long-form ASMR generator (10-25 min) for Chatterbox")
+    # ── Bulk mode ──────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--scripts-dir", type=str, default=None,
+        help="Folder of .txt scripts to render in bulk (one output per file)."
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Destination folder for bulk output (default: output/batch/). "
+             "Only used with --scripts-dir."
+    )
+    # ── Single-file / inline mode ──────────────────────────────────────────
     parser.add_argument("--text-file", type=str, default=None, help="Path to input script text file")
     parser.add_argument("--text", type=str, default=None, help="Inline input script text")
     parser.add_argument("--reference-audio", type=str, default=None, help="Reference WAV/MP3 used to build speaker profile")
@@ -273,8 +368,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # ── Route to batch or single-file mode ───────────────────────────────
+    if args.scripts_dir:
+        if not os.path.isdir(args.scripts_dir):
+            raise NotADirectoryError(f"--scripts-dir not found: {args.scripts_dir}")
+        batch_render(args)
+        return
+
     if not args.text_file and not args.text:
-        raise ValueError("Provide either --text-file or --text")
+        raise ValueError("Provide --scripts-dir, --text-file, or --text")
 
     text = args.text or ""
     if args.text_file:
