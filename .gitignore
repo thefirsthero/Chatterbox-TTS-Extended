@@ -5,3 +5,14 @@ __pycache__
 
 # VS Code
 *.code-workspace
+
+# Generated outputs and intermediate files — do not commit
+output/*
+!output/voice_profiles/
+!output/voice_profiles/**
+temp/
+tmp_*.py
+
+# Large reference audio files (>100 MB — use Git LFS or store externally)
+*.wav
+!ASMR-Ginny-Reference.wav

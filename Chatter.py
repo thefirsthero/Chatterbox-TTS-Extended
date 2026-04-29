@@ -15,6 +15,9 @@ import string
 import difflib
 import time
 import gc
+import atexit
+import shutil
+import threading
 from chatterbox.src.chatterbox.tts import ChatterboxTTS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import whisper
@@ -32,6 +35,55 @@ try:
     _PYRNNOISE_AVAILABLE = True
 except Exception:
     _PYRNNOISE_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
+# Temp-file automatic cleanup
+# ---------------------------------------------------------------------------
+_TEMP_DIR = "temp"
+_TEMP_MAX_AGE_SECS = 30 * 60   # files older than 30 min are purged on sweep
+
+def _cleanup_temp_dir(max_age_secs: int = _TEMP_MAX_AGE_SECS, silent: bool = True) -> int:
+    """Delete temp wav/pt files older than *max_age_secs* seconds. Returns count removed."""
+    removed = 0
+    if not os.path.isdir(_TEMP_DIR):
+        return removed
+    cutoff = time.time() - max_age_secs
+    for fname in os.listdir(_TEMP_DIR):
+        fpath = os.path.join(_TEMP_DIR, fname)
+        try:
+            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                os.remove(fpath)
+                removed += 1
+        except OSError:
+            pass
+    if not silent and removed:
+        print(f"[cleanup] Removed {removed} stale file(s) from {_TEMP_DIR}/")
+    return removed
+
+def _cleanup_temp_dir_full(silent: bool = True) -> None:
+    """Remove the entire temp directory (called on process exit)."""
+    if os.path.isdir(_TEMP_DIR):
+        try:
+            shutil.rmtree(_TEMP_DIR)
+            if not silent:
+                print(f"[cleanup] Removed {_TEMP_DIR}/ on exit.")
+        except OSError:
+            pass
+
+# Register full purge on clean process exit
+atexit.register(_cleanup_temp_dir_full)
+
+# Periodic background sweep: runs every 15 minutes while the app is alive
+def _start_temp_sweep_thread(interval_secs: int = 900) -> None:
+    def _sweep():
+        while True:
+            time.sleep(interval_secs)
+            _cleanup_temp_dir(silent=False)
+    t = threading.Thread(target=_sweep, daemon=True, name="temp-sweep")
+    t.start()
+
+_start_temp_sweep_thread()
+# ---------------------------------------------------------------------------
 
 
 SETTINGS_PATH = "settings.json"
@@ -229,10 +281,10 @@ try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
     nltk.download('punkt')
-#try:
-#    nltk.data.find('tokenizers/punkt_tab')
-#except LookupError:
-#    nltk.download('punkt_tab')
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab')
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 
@@ -526,7 +578,7 @@ def _convert_to_pcm48k_mono(input_wav, output_wav, sr=48000):
     """
     subprocess.run([
         "ffmpeg", "-y", "-i", input_wav,
-        "-ac", "2", "-ar", str(sr), "-sample_fmt", "s16", output_wav
+        "-ac", "1", "-ar", str(sr), "-sample_fmt", "s16", output_wav
     ], check=True)
 
 
@@ -1619,6 +1671,8 @@ def main(server_name=None, server_port=None, share=False):
                         load_settings_file = gr.File(label="Load Settings (.json)", file_types=[".json"])
 
                         run_button = gr.Button("Generate")
+                        asmr_preset_button = gr.Button("Apply ASMR Preset (Long-form)")
+                        asmr_ultra_soft_preset_button = gr.Button("Apply ASMR Preset (Ultra-Soft)")
                     with gr.Column():
                         exaggeration_slider = gr.Slider(0.0, 2.0, value=settings["exaggeration_slider"], step=0.1, label="Emotion Exaggeration")
                         cfg_weight_slider = gr.Slider(0.1, 1.0, value=settings["cfg_weight_slider"], step=0.01, label="CFG Weight/Pace")
@@ -1759,6 +1813,84 @@ def main(server_name=None, server_port=None, share=False):
                 mapping = dict(zip(keys, vals))
                 save_settings(mapping)
                 return
+
+            def apply_asmr_preset():
+                """
+                Tuned defaults for long-form ASMR workflows.
+                This keeps user text/reference untouched and only updates controls.
+                """
+                return [
+                    0.32,  # exaggeration_slider
+                    0.36,  # cfg_weight_slider
+                    0.46,  # temp_slider
+                    True,  # enable_batching_checkbox
+                    False, # smart_batch_short_sentences_checkbox
+                    False, # to_lowercase_checkbox
+                    True,  # normalize_spacing_checkbox
+                    True,  # fix_dot_letters_checkbox
+                    True,  # remove_reference_numbers_checkbox
+                    True,  # use_pyrnnoise_checkbox
+                    False, # use_auto_editor_checkbox
+                    False, # keep_original_checkbox
+                    False, # normalize_audio_checkbox
+                    "ebu",# normalize_method_dropdown
+                    -24,   # normalize_level_slider
+                    -2,    # normalize_tp_slider
+                    7,     # normalize_lra_slider
+                    ["wav", "mp3"],  # export_format_checkboxes
+                    True,  # disable_watermark_checkbox
+                    1,     # num_generations_input
+                    4,     # num_candidates_slider
+                    3,     # max_attempts_slider
+                    False, # bypass_whisper_checkbox
+                    "small (~2–3 GB OpenAI / ~1.2–1.7 GB faster-whisper)", # whisper_model_dropdown
+                    True,  # use_faster_whisper_checkbox
+                    True,  # enable_parallel_checkbox
+                    2,     # num_parallel_workers_slider
+                    True,  # use_longest_transcript_on_fail_checkbox
+                    20260429,  # seed_input
+                    "",    # sound_words_field
+                    False, # separate_files_checkbox
+                ]
+
+            def apply_asmr_ultra_soft_preset():
+                """
+                Extra-gentle ASMR defaults focused on softer delivery and calmer pacing.
+                This keeps user text/reference untouched and only updates controls.
+                """
+                return [
+                    0.22,  # exaggeration_slider
+                    0.30,  # cfg_weight_slider
+                    0.36,  # temp_slider
+                    True,  # enable_batching_checkbox
+                    False, # smart_batch_short_sentences_checkbox
+                    False, # to_lowercase_checkbox
+                    True,  # normalize_spacing_checkbox
+                    True,  # fix_dot_letters_checkbox
+                    True,  # remove_reference_numbers_checkbox
+                    True,  # use_pyrnnoise_checkbox
+                    False, # use_auto_editor_checkbox
+                    False, # keep_original_checkbox
+                    True,  # normalize_audio_checkbox
+                    "ebu",# normalize_method_dropdown
+                    -27,   # normalize_level_slider
+                    -3,    # normalize_tp_slider
+                    6,     # normalize_lra_slider
+                    ["wav", "mp3"],  # export_format_checkboxes
+                    True,  # disable_watermark_checkbox
+                    1,     # num_generations_input
+                    5,     # num_candidates_slider
+                    4,     # max_attempts_slider
+                    False, # bypass_whisper_checkbox
+                    "small (~2–3 GB OpenAI / ~1.2–1.7 GB faster-whisper)", # whisper_model_dropdown
+                    True,  # use_faster_whisper_checkbox
+                    True,  # enable_parallel_checkbox
+                    1,     # num_parallel_workers_slider
+                    True,  # use_longest_transcript_on_fail_checkbox
+                    20260430,  # seed_input
+                    "",    # sound_words_field
+                    False, # separate_files_checkbox
+                ]
              
             
 
@@ -1806,6 +1938,82 @@ def main(server_name=None, server_port=None, share=False):
                     separate_files_checkbox       #35
                 ],
                 outputs=[output_audio, audio_dropdown, audio_preview],
+            )
+
+            asmr_preset_button.click(
+                fn=apply_asmr_preset,
+                inputs=[],
+                outputs=[
+                    exaggeration_slider,
+                    cfg_weight_slider,
+                    temp_slider,
+                    enable_batching_checkbox,
+                    smart_batch_short_sentences_checkbox,
+                    to_lowercase_checkbox,
+                    normalize_spacing_checkbox,
+                    fix_dot_letters_checkbox,
+                    remove_reference_numbers_checkbox,
+                    use_pyrnnoise_checkbox,
+                    use_auto_editor_checkbox,
+                    keep_original_checkbox,
+                    normalize_audio_checkbox,
+                    normalize_method_dropdown,
+                    normalize_level_slider,
+                    normalize_tp_slider,
+                    normalize_lra_slider,
+                    export_format_checkboxes,
+                    disable_watermark_checkbox,
+                    num_generations_input,
+                    num_candidates_slider,
+                    max_attempts_slider,
+                    bypass_whisper_checkbox,
+                    whisper_model_dropdown,
+                    use_faster_whisper_checkbox,
+                    enable_parallel_checkbox,
+                    num_parallel_workers_slider,
+                    use_longest_transcript_on_fail_checkbox,
+                    seed_input,
+                    sound_words_field,
+                    separate_files_checkbox,
+                ],
+            )
+
+            asmr_ultra_soft_preset_button.click(
+                fn=apply_asmr_ultra_soft_preset,
+                inputs=[],
+                outputs=[
+                    exaggeration_slider,
+                    cfg_weight_slider,
+                    temp_slider,
+                    enable_batching_checkbox,
+                    smart_batch_short_sentences_checkbox,
+                    to_lowercase_checkbox,
+                    normalize_spacing_checkbox,
+                    fix_dot_letters_checkbox,
+                    remove_reference_numbers_checkbox,
+                    use_pyrnnoise_checkbox,
+                    use_auto_editor_checkbox,
+                    keep_original_checkbox,
+                    normalize_audio_checkbox,
+                    normalize_method_dropdown,
+                    normalize_level_slider,
+                    normalize_tp_slider,
+                    normalize_lra_slider,
+                    export_format_checkboxes,
+                    disable_watermark_checkbox,
+                    num_generations_input,
+                    num_candidates_slider,
+                    max_attempts_slider,
+                    bypass_whisper_checkbox,
+                    whisper_model_dropdown,
+                    use_faster_whisper_checkbox,
+                    enable_parallel_checkbox,
+                    num_parallel_workers_slider,
+                    use_longest_transcript_on_fail_checkbox,
+                    seed_input,
+                    sound_words_field,
+                    separate_files_checkbox,
+                ],
             )
 
 

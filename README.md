@@ -1,6 +1,6 @@
 # 🚀 Chatterbox-TTS-Extended — All Features & Technical Explanations
 
-Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and batch speech synthesis, voice conversion, and artifact-reduced audio generation. It is based on [Chatterbox-TTS](https://github.com/resemble-ai/chatterbox), but adds:
+Chatterbox-TTS-Extended is a _power-user TTS pipeline_ for advanced single and batch speech synthesis, voice conversion, and artifact-reduced audio generation. It is based on [Chatterbox-TTS](https://github.com/resemble-ai/chatterbox), but adds:
 
 - **Multi-file input & batch output**
 - **Custom candidate generation & validation**
@@ -140,10 +140,10 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 
 ## Generation Logic & Quality Control
 
-- **Number of generations:** Produce multiple different outputs at once (“takes”).  
-- **Candidates per chunk:** For each chunk, generate multiple variants.  
-- **Max attempts per candidate:** If validation fails, retry up to N times.  
-- **Deterministic seeding:** A per-chunk/per-candidate/per-attempt seed is derived from the base seed for reproducibility.  
+- **Number of generations:** Produce multiple different outputs at once (“takes”).
+- **Candidates per chunk:** For each chunk, generate multiple variants.
+- **Max attempts per candidate:** If validation fails, retry up to N times.
+- **Deterministic seeding:** A per-chunk/per-candidate/per-attempt seed is derived from the base seed for reproducibility.
 - **Fallback strategies:** If all candidates fail validation, use the longest transcript or highest similarity score.
 
 ---
@@ -180,12 +180,14 @@ Chatterbox-TTS-Extended is a *power-user TTS pipeline* for advanced single and b
 Convert any voice to sound like another!
 
 **The Voice Conversion tab lets you:**
+
 - Upload or record the **input audio** (the voice to convert).
 - Upload or record the **target/reference voice** (the voice to match).
 - Adjust pitch (optional)
 - Click **Run Voice Conversion** — get a new audio file with the same words but the target voice!
 
 **Technical highlights:**
+
 - Handles long audio by splitting into overlapping chunks and recombining with crossfades.
 - Output matches the model’s sample rate and fidelity.
 - Automatic chunking and processing—no manual intervention needed.
@@ -215,23 +217,55 @@ Convert any voice to sound like another!
 Requires **Python 3.10.x** and **[FFmpeg](https://ffmpeg.org/download.html)** (on PATH).
 
 Clone the repo:
+
 ```bash
 git clone https://github.com/petermg/Chatterbox-TTS-Extended
 ```
 
 Install requirements:
+
 ```bash
 pip install --force-reinstall -r requirements.txt
 # If needed, try requirements.base.with.versions.txt or requirements_frozen.txt
 ```
 
 Run:
+
 ```bash
 # Use your repo's main file. For example:
 python Chatter.py
 # or, if your file is named like this branch:
 python zChatter.py
 ```
+
+### Long-Form ASMR Generator (10-25 minutes)
+
+This repo now includes a dedicated long-form ASMR script:
+
+```bash
+python asmr_longform.py --text-file your_script.txt --reference-audio female_soft_reference.wav --target-minutes 15 --loop-script --export-mp3
+```
+
+Key points:
+
+- Use a clean **female whisper / soft-spoken** reference clip for best voice identity.
+- The script is tuned for ASMR pacing: short chunking, gentle pauses, and subtle parameter drift.
+- Duration target must be between **10 and 25 minutes**.
+- If your script is too short, add `--loop-script` to repeat naturally until target duration.
+
+Useful options:
+
+- `--target-minutes 10-25`
+- `--exaggeration 0.32`
+- `--cfg-weight 0.36`
+- `--temperature 0.46`
+- `--pause-min-ms 420 --pause-max-ms 1050`
+- `--crossfade-ms 45`
+
+Output:
+
+- WAV is always written to `output/`.
+- MP3 is optional via `--export-mp3`.
 
 If [FFmpeg](https://ffmpeg.org/download.html) isn’t in your PATH, place the executable alongside the script or add it to PATH.
 
@@ -245,9 +279,7 @@ Open an issue or pull request for suggestions, bug reports, or improvements!
 
 ## Known Bugs:
 
-It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model. 
+It seems if you use fasterwhisper for validation, sometimes it just silently crashes. Apparently this has to do with using the fasterwhisper model. It's not actually the python code. So if you are experiencing this, switch back to the original WhisperSync model.
 UPDATE: with the latest update this bug may have been resolved.
 
 ---
-
-
