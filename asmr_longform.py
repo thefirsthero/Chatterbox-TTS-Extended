@@ -3,6 +3,9 @@ import datetime
 import os
 import random
 import re
+import shutil
+import subprocess
+import tempfile
 from typing import List
 
 import numpy as np
@@ -103,6 +106,76 @@ def estimate_required_words(minutes: float, wpm: int = 105) -> int:
     return int(minutes * wpm)
 
 
+def _artifact_score(wav: torch.Tensor, sample_rate: int) -> float:
+    """
+    Heuristic artifact score. Lower is better.
+    Penalizes clipping, extreme crest factor (bursty gasps/plosives),
+    and excessive low-frequency rumble often perceived as "wind".
+    """
+    x = wav
+    if x.ndim == 2:
+        x = x[0]
+    x = x.detach().float().cpu()
+
+    if x.numel() == 0:
+        return 1e9
+
+    eps = 1e-8
+    rms = torch.sqrt(torch.mean(x * x) + eps).item()
+    peak = torch.max(torch.abs(x)).item()
+    crest = peak / (rms + eps)
+    clipped_ratio = (torch.abs(x) > 0.98).float().mean().item()
+
+    # FFT power ratio below 120 Hz (wind/rumble indicator)
+    n = int(x.numel())
+    if n < 128:
+        low_ratio = 0.0
+    else:
+        spec = torch.fft.rfft(x)
+        power = torch.abs(spec) ** 2
+        freqs = torch.fft.rfftfreq(n, d=1.0 / float(sample_rate))
+        total = torch.sum(power).item() + eps
+        low = torch.sum(power[freqs < 120.0]).item()
+        low_ratio = low / total
+
+    score = 0.0
+    score += clipped_ratio * 25.0
+    score += max(0.0, crest - 7.5) * 0.6
+    score += max(0.0, low_ratio - 0.28) * 8.0
+    # Avoid near-silent degenerations
+    if rms < 0.01:
+        score += 4.0
+    return float(score)
+
+
+def _apply_post_clean_filter_if_available(wav_path: str) -> None:
+    """Run a gentle ffmpeg cleanup chain in-place if ffmpeg is available."""
+    if not shutil.which("ffmpeg"):
+        print("[ASMR] ffmpeg not found; skipping post-clean filter")
+        return
+
+    fd, temp_out = tempfile.mkstemp(prefix="asmr_clean_", suffix=".wav")
+    os.close(fd)
+    try:
+        filt = "highpass=f=80,lowpass=f=12000,afftdn=nf=-24,alimiter=limit=0.93"
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", wav_path,
+            "-af", filt,
+            temp_out,
+        ]
+        subprocess.run(cmd, check=True)
+        os.replace(temp_out, wav_path)
+        print("[ASMR] Applied post-clean filter (ffmpeg)")
+    except Exception as exc:
+        print(f"[ASMR] Post-clean filter skipped: {exc}")
+        if os.path.exists(temp_out):
+            try:
+                os.remove(temp_out)
+            except OSError:
+                pass
+
+
 def render_asmr(
     text: str,
     reference_audio: str | None,
@@ -123,6 +196,8 @@ def render_asmr(
     exaggeration_drift: float,
     voice_profile_in: str | None,
     voice_profile_out: str | None,
+    candidates_per_chunk: int,
+    clean_mode: bool,
 ) -> str:
     if not reference_audio and not voice_profile_in:
         raise ValueError("Provide --reference-audio or --voice-profile-in")
@@ -177,6 +252,7 @@ def render_asmr(
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     assembled: AudioSegment | None = None
+    generated_chunk_paths: list[str] = []
     target_ms = int(target_minutes * 60 * 1000)
     idx = 0
     pass_num = 0
@@ -200,17 +276,39 @@ def render_asmr(
         else:
             local_exag = exaggeration
 
-        wav = model.generate(
-            chunk_text,
-            audio_prompt_path=None,
-            exaggeration=local_exag,
-            cfg_weight=cfg_weight,
-            temperature=local_temp,
-            apply_watermark=False,
-        )
+        # Generate N candidates and keep the one with the lowest artifact score.
+        best_wav = None
+        best_score = float("inf")
+        n_cands = max(1, int(candidates_per_chunk))
+        for cand_idx in range(n_cands):
+            # Deterministic-but-distinct seed per chunk/candidate.
+            cand_seed = seed + (pass_num * 100000) + (idx * 100) + cand_idx
+            torch.manual_seed(cand_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(cand_seed)
+
+            wav = model.generate(
+                chunk_text,
+                audio_prompt_path=None,
+                exaggeration=local_exag,
+                cfg_weight=cfg_weight,
+                temperature=local_temp,
+                apply_watermark=False,
+            )
+            score = _artifact_score(wav, model.sr)
+            if score < best_score:
+                best_score = score
+                best_wav = wav
+
+        if best_wav is None:
+            raise RuntimeError("Failed to generate candidate chunk")
 
         chunk_path = os.path.join("temp", f"asmr_chunk_{pass_num:02d}_{idx:04d}.wav")
-        torchaudio.save(chunk_path, wav.cpu(), model.sr)
+        wav_to_save = best_wav if best_wav.ndim == 2 else best_wav.unsqueeze(0)
+        torchaudio.save(chunk_path, wav_to_save.cpu(), model.sr)
+        generated_chunk_paths.append(chunk_path)
+        if clean_mode:
+            print(f"[ASMR][clean] chunk {pass_num:02d}/{idx:04d} selected score={best_score:.4f} ({n_cands} cands)")
 
         seg = AudioSegment.from_wav(chunk_path)
         pause = AudioSegment.silent(duration=random.randint(pause_min_ms, pause_max_ms))
@@ -233,6 +331,18 @@ def render_asmr(
         assembled = assembled[:target_ms]
 
     assembled.export(output_path, format="wav")
+
+    if clean_mode:
+        _apply_post_clean_filter_if_available(output_path)
+
+    # Always clean temp chunk files created by this run.
+    for p in generated_chunk_paths:
+        if os.path.isfile(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
     print(f"[ASMR] Saved WAV: {output_path}")
 
     if export_mp3:
@@ -309,6 +419,8 @@ def batch_render(args) -> None:
                 exaggeration_drift=args.exaggeration_drift,
                 voice_profile_in=args.voice_profile_in,
                 voice_profile_out=None,  # only save profile once, from first run
+                candidates_per_chunk=args.candidates_per_chunk,
+                clean_mode=args.clean_mode,
             )
             results.append((script_path, out_wav, "ok"))
         except Exception as exc:
@@ -365,8 +477,37 @@ def main() -> None:
 
     parser.add_argument("--loop-script", action="store_true", help="Repeat script if needed to hit target duration")
     parser.add_argument("--export-mp3", action="store_true", help="Also export a 320k MP3")
+    parser.add_argument("--candidates-per-chunk", type=int, default=1, help="Generate N candidates per chunk and keep the cleanest")
+    parser.add_argument("--clean-mode", action="store_true", help="Enable artifact-safe defaults + post-clean filter")
 
     args = parser.parse_args()
+
+    if args.clean_mode:
+        # Conservative defaults to reduce wind/gasp artifacts.
+        args.temperature = min(args.temperature, 0.36)
+        args.exaggeration = min(args.exaggeration, 0.22)
+        args.cfg_weight = max(args.cfg_weight, 0.50)
+        args.temp_drift = 0.0
+        args.exaggeration_drift = 0.0
+
+        args.pause_min_ms = max(args.pause_min_ms, 600)
+        args.pause_max_ms = max(args.pause_max_ms, 1300)
+        args.crossfade_ms = max(args.crossfade_ms, 90)
+
+        args.min_chunk_chars = max(args.min_chunk_chars, 90)
+        args.max_chunk_chars = min(args.max_chunk_chars, 170)
+        if args.max_chunk_chars <= args.min_chunk_chars:
+            args.max_chunk_chars = args.min_chunk_chars + 40
+
+        if args.candidates_per_chunk < 2:
+            args.candidates_per_chunk = 3
+
+        print("[ASMR] Clean mode enabled")
+        print(
+            "[ASMR] Clean params: "
+            f"temp={args.temperature}, exag={args.exaggeration}, cfg={args.cfg_weight}, "
+            f"cands/chunk={args.candidates_per_chunk}, crossfade={args.crossfade_ms}"
+        )
 
     # ── Route to batch or single-file mode ───────────────────────────────
     if args.scripts_dir:
@@ -410,6 +551,8 @@ def main() -> None:
         exaggeration_drift=args.exaggeration_drift,
         voice_profile_in=args.voice_profile_in,
         voice_profile_out=args.voice_profile_out,
+        candidates_per_chunk=args.candidates_per_chunk,
+        clean_mode=args.clean_mode,
     )
 
 
