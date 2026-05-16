@@ -6,6 +6,11 @@ __pycache__
 # VS Code
 *.code-workspace
 
+# Local secrets
+.env
+.env.*
+!.env.example
+
 # Generated outputs and intermediate files — do not commit
 output/*
 !output/voice_profiles/
