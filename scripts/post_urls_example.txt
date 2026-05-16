@@ -1,0 +1,5 @@
+# One Reddit post URL or post ID per line.
+# Lines starting with # are ignored.
+
+https://www.reddit.com/r/AmItheAsshole/comments/1kt7jbl/aitah_for_telling_my_niece_i_wont_drive_20_hours/
+1kt7jbl

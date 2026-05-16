@@ -1,0 +1,17 @@
+# Extra dependencies for the Reddit Shorts pipeline
+# Install with: pip install -r requirements_shorts.txt
+
+# Reddit API
+praw>=7.7.0
+
+# Image rendering (Reddit card)
+Pillow>=10.0.0
+
+# Video downloading
+yt-dlp>=2024.1.1
+
+# Public JSON fallback scraping
+requests>=2.31.0
+
+# .env file support (optional but recommended for Reddit credentials)
+python-dotenv>=1.0.0
