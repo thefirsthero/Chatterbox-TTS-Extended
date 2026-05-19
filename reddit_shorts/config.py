@@ -111,7 +111,8 @@ CARD_SCROLL_END_MARGIN_S = 2.0 # Stop scrolling this many seconds before audio e
 # Subtitle zone
 SUBTITLE_ZONE_TOP = 1670       # Top of subtitle band
 SUBTITLE_ZONE_BOTTOM = 1870    # Bottom of subtitle band (progress bar below)
-SUBTITLE_FONT_SIZE = 54        # Points in ASS coordinates (PlayResY=1920)
+SUBTITLE_FONT_SIZE = 72        # Points in ASS coordinates (PlayResY=1920) — increased from 54
+SUBTITLE_FONT_NAME = "Segoe UI"  # Modern, clean font (falls back to Arial on Linux)
 SUBTITLE_LINE_MARGIN_V = 180   # ASS MarginV from bottom for Default style
 
 # Progress bar

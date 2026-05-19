@@ -110,7 +110,7 @@ def _build_ass_header() -> str:
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         # Default style — body subtitles, bottom-centre, white with thick black outline
-        f"Style: Default,Arial,{cfg.SUBTITLE_FONT_SIZE},"
+        f"Style: Default,{cfg.SUBTITLE_FONT_NAME},{cfg.SUBTITLE_FONT_SIZE},"
         "&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
         f"-1,0,0,0,100,100,0.5,0,1,3.5,1,2,60,60,{cfg.SUBTITLE_LINE_MARGIN_V},1\n"
         # Hook style — large, centred in the upper half, orange outline

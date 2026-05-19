@@ -132,7 +132,7 @@ def _apply_post_clean(wav_path: str) -> None:
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", wav_path,
-            "-af", "highpass=f=80,lowpass=f=12000,afftdn=nf=-24,alimiter=limit=0.93",
+            "-af", "highpass=f=60,lowpass=f=14000,alimiter=limit=0.97",
             tmp,
         ]
         subprocess.run(cmd, check=True)
@@ -188,7 +188,9 @@ def generate_narration(
     model = ChatterboxTTS.from_pretrained(device)
     print(f"[tts] Model loaded. Sample rate: {model.sr}")
 
+    # Load voice profile and set as model default
     conds = Conditionals.load(str(voice_profile), map_location="cpu").to(device)
+    model.default_conds = conds
     print(f"[tts] Loaded voice profile: {voice_profile}")
 
     sentences = _split_sentences(text)

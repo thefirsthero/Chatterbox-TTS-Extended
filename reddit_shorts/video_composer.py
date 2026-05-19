@@ -299,5 +299,5 @@ def compose_video(
             raise RuntimeError(f"FFmpeg failed (exit {result.returncode}). Check output above.")
 
     size_mb = output_path.stat().st_size / 1_048_576
-    print(f"[video] Done → {output_path}  ({size_mb:.1f} MB, {audio_duration:.0f}s)")
+    print(f"[video] Done -> {output_path}  ({size_mb:.1f} MB, {audio_duration:.0f}s)")
     return output_path
