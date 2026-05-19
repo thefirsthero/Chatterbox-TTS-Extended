@@ -29,6 +29,7 @@ from reddit_shorts.scraper import RedditPost, mark_post_done, scrape_posts
 from reddit_shorts.safety import evaluate_post
 from reddit_shorts.script_writer import generate_script
 from reddit_shorts.subtitle_gen import SubtitleSpec, generate_ass
+from reddit_shorts.transcription import transcribe_word_timestamps
 
 
 def _post_output_dir(post_id: str) -> Path:
@@ -148,10 +149,13 @@ def process_post(
     # ── Step 4: Generate subtitles ───────────────────────────────────────────
     print("[pipeline] Step 4/6 — Generating subtitles…")
     subtitle_ass = out_dir / "subtitles.ass"
+    subtitle_body_text = script.body + ("\n\n" + script.comment_section if script.comment_section else "") + "\n\n" + script.cta
+    timed_words = transcribe_word_timestamps(audio_wav, expected_text=subtitle_body_text)
     spec = SubtitleSpec(
         hook_text=script.hook,
-        body_text=script.body + ("\n\n" + script.comment_section if script.comment_section else "") + "\n\n" + script.cta,
+        body_text=subtitle_body_text,
         audio_duration_s=audio_duration,
+        timed_words=timed_words,
     )
     generate_ass(spec, subtitle_ass)
 

@@ -9,6 +9,8 @@ take, then assembles with pauses and exports a final normalised WAV + MP3.
 import os
 import random
 import re
+import json
+import hashlib
 import subprocess
 import tempfile
 from pathlib import Path
@@ -31,6 +33,44 @@ def _detect_device() -> str:
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _chunk_cache_dir(output_wav: Path) -> Path:
+    return output_wav.parent / "_tts_chunks" / output_wav.stem
+
+
+def _chunk_cache_signature(chunk_text: str, voice_profile: Path) -> str:
+    payload = {
+        "chunk_text": chunk_text,
+        "voice_profile": str(voice_profile),
+        "exaggeration": cfg.TTS_EXAGGERATION,
+        "cfg_weight": cfg.TTS_CFG_WEIGHT,
+        "temperature": cfg.TTS_TEMPERATURE,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()
+
+
+def _load_cached_chunk(chunk_path: Path, meta_path: Path, signature: str) -> tuple[Optional[AudioSegment], Optional[int]]:
+    if not chunk_path.exists() or not meta_path.exists():
+        return None, None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None
+    if meta.get("signature") != signature:
+        return None, None
+    pause_ms = int(meta.get("pause_ms", cfg.TTS_PAUSE_MIN_MS))
+    return AudioSegment.from_wav(str(chunk_path)), pause_ms
+
+
+def _save_cached_chunk(chunk_path: Path, meta_path: Path, wav: torch.Tensor, sample_rate: int, signature: str, pause_ms: int) -> None:
+    wav_to_save = wav if wav.ndim == 2 else wav.unsqueeze(0)
+    torchaudio.save(str(chunk_path), wav_to_save.cpu(), sample_rate)
+    meta_path.write_text(
+        json.dumps({"signature": signature, "pause_ms": pause_ms}, indent=2),
+        encoding="utf-8",
+    )
 
 
 # ── Text preprocessing ──────────────────────────────────────────────────────
@@ -193,58 +233,83 @@ def generate_narration(
     model.default_conds = conds
     print(f"[tts] Loaded voice profile: {voice_profile}")
 
+    if hasattr(model, "eval"):
+        model.eval()
+
+    max_chunk_chars = cfg.TTS_CPU_MAX_CHUNK_CHARS if device == "cpu" else cfg.TTS_MAX_CHUNK_CHARS
     sentences = _split_sentences(text)
-    chunks = _chunk_sentences(sentences)
+    chunks = _chunk_sentences(sentences, max_chars=max_chunk_chars)
     if not chunks:
         raise ValueError("No text chunks produced.")
     print(f"[tts] {len(chunks)} chunks to generate")
 
-    tmp_dir = cfg.TEMP_DIR / "tts"
+    tmp_dir = _chunk_cache_dir(output_wav)
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     assembled: Optional[AudioSegment] = None
 
-    for idx, chunk_text in enumerate(chunks):
-        best_wav: Optional[torch.Tensor] = None
-        best_score = float("inf")
-        n_cands = cfg.TTS_CANDIDATES_PER_CHUNK
+    try:
+        for idx, chunk_text in enumerate(chunks):
+            chunk_file = tmp_dir / f"chunk_{idx:04d}.wav"
+            meta_file = tmp_dir / f"chunk_{idx:04d}.json"
+            signature = _chunk_cache_signature(chunk_text, Path(voice_profile))
+            cached_seg, cached_pause_ms = (None, None)
+            if cfg.TTS_RESUME_PARTIALS:
+                cached_seg, cached_pause_ms = _load_cached_chunk(chunk_file, meta_file, signature)
 
-        for cand_idx in range(n_cands):
-            cand_seed = seed + idx * 100 + cand_idx
-            torch.manual_seed(cand_seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(cand_seed)
+            if cached_seg is not None and cached_pause_ms is not None:
+                seg = cached_seg + AudioSegment.silent(duration=cached_pause_ms)
+                if assembled is None:
+                    assembled = seg
+                else:
+                    assembled = assembled.append(seg, crossfade=cfg.TTS_CROSSFADE_MS)
+                print(f"[tts] chunk {idx + 1}/{len(chunks)} resumed from cache")
+                continue
 
-            wav = model.generate(
-                chunk_text,
-                audio_prompt_path=None,
-                exaggeration=cfg.TTS_EXAGGERATION,
-                cfg_weight=cfg.TTS_CFG_WEIGHT,
-                temperature=cfg.TTS_TEMPERATURE,
-                apply_watermark=False,
-            )
-            score = _artifact_score(wav, model.sr)
-            if score < best_score:
-                best_score = score
-                best_wav = wav
+            best_wav: Optional[torch.Tensor] = None
+            best_score = float("inf")
+            n_cands = cfg.TTS_CANDIDATES_PER_CHUNK_CPU if device == "cpu" else cfg.TTS_CANDIDATES_PER_CHUNK
 
-        if best_wav is None:
-            raise RuntimeError(f"Chunk {idx}: all candidates failed")
+            for cand_idx in range(n_cands):
+                cand_seed = seed + idx * 100 + cand_idx
+                torch.manual_seed(cand_seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(cand_seed)
 
-        chunk_path = str(tmp_dir / f"chunk_{idx:04d}.wav")
-        wav_to_save = best_wav if best_wav.ndim == 2 else best_wav.unsqueeze(0)
-        torchaudio.save(chunk_path, wav_to_save.cpu(), model.sr)
+                wav = model.generate(
+                    chunk_text,
+                    audio_prompt_path=None,
+                    exaggeration=cfg.TTS_EXAGGERATION,
+                    cfg_weight=cfg.TTS_CFG_WEIGHT,
+                    temperature=cfg.TTS_TEMPERATURE,
+                    apply_watermark=False,
+                )
+                score = _artifact_score(wav, model.sr)
+                if score < best_score:
+                    best_score = score
+                    best_wav = wav
 
-        seg = AudioSegment.from_wav(chunk_path)
-        pause_ms = random.randint(cfg.TTS_PAUSE_MIN_MS, cfg.TTS_PAUSE_MAX_MS)
-        seg = seg + AudioSegment.silent(duration=pause_ms)
+            if best_wav is None:
+                raise RuntimeError(f"Chunk {idx}: all candidates failed")
 
-        if assembled is None:
-            assembled = seg
-        else:
-            assembled = assembled.append(seg, crossfade=cfg.TTS_CROSSFADE_MS)
+            pause_ms = random.randint(cfg.TTS_PAUSE_MIN_MS, cfg.TTS_PAUSE_MAX_MS)
+            _save_cached_chunk(chunk_file, meta_file, best_wav, model.sr, signature, pause_ms)
 
-        print(f"[tts] chunk {idx + 1}/{len(chunks)} score={best_score:.4f}")
+            seg = AudioSegment.from_wav(str(chunk_file))
+            seg = seg + AudioSegment.silent(duration=pause_ms)
+
+            if assembled is None:
+                assembled = seg
+            else:
+                assembled = assembled.append(seg, crossfade=cfg.TTS_CROSSFADE_MS)
+
+            print(f"[tts] chunk {idx + 1}/{len(chunks)} score={best_score:.4f}")
+    except KeyboardInterrupt:
+        print("[tts] Interrupted. Completed chunks remain cached for resume.")
+        raise
+
+    if assembled is None:
+        raise RuntimeError("No narration audio was assembled.")
 
     # Export raw assembly
     raw_wav = str(tmp_dir / "raw_assembly.wav")

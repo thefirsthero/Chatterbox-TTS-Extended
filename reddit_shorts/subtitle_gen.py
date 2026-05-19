@@ -17,6 +17,46 @@ from pathlib import Path
 from typing import Optional
 
 from reddit_shorts import config as cfg
+from reddit_shorts.transcription import TimedWord
+
+
+def _norm_word(word: str) -> str:
+    return re.sub(r"[^a-z0-9']+", "", (word or "").lower())
+
+
+def _find_body_offset(timed_words: list[TimedWord], script_words: list[str], hook_end_s: float) -> int:
+    """Find the best timed-word offset where body script likely begins."""
+    if not timed_words or not script_words:
+        return 0
+
+    probe = [_norm_word(word) for word in script_words[:6] if _norm_word(word)]
+    if not probe:
+        return 0
+
+    max_offset = max(0, len(timed_words) - len(probe))
+    best_offset = 0
+    best_score = -1.0
+
+    for offset in range(max_offset + 1):
+        if timed_words[offset].start_s < hook_end_s - 0.15:
+            continue
+        matched = 0
+        compared = 0
+        for idx, expected in enumerate(probe):
+            timed_norm = _norm_word(timed_words[offset + idx].word)
+            if not timed_norm:
+                continue
+            compared += 1
+            if timed_norm == expected:
+                matched += 1
+        if compared == 0:
+            continue
+        score = matched / compared
+        if score > best_score:
+            best_score = score
+            best_offset = offset
+
+    return best_offset
 
 
 # ── Timing estimation ────────────────────────────────────────────────────────
@@ -112,7 +152,7 @@ def _build_ass_header() -> str:
         # Default style — body subtitles, bottom-centre, white with thick black outline
         f"Style: Default,{cfg.SUBTITLE_FONT_NAME},{cfg.SUBTITLE_FONT_SIZE},"
         "&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
-        f"-1,0,0,0,100,100,0.5,0,1,3.5,1,2,60,60,{cfg.SUBTITLE_LINE_MARGIN_V},1\n"
+        f"-1,0,0,0,100,100,0.3,0,1,2.6,0.6,2,60,60,{cfg.SUBTITLE_LINE_MARGIN_V},1\n"
         # Hook style — large, centred in the upper half, orange outline
         "Style: Hook,Arial,72,"
         "&H00FFFFFF,&H000000FF,&H000045FF,&H00000000,"
@@ -132,6 +172,7 @@ class SubtitleSpec:
     body_text: str               # Full narration (hook already excluded)
     audio_duration_s: float
     hook_duration_s: float = 3.2 # How long to show the hook splash
+    timed_words: Optional[list[TimedWord]] = None
 
 
 def generate_ass(spec: SubtitleSpec, output_path: Path) -> Path:
@@ -158,12 +199,38 @@ def generate_ass(spec: SubtitleSpec, output_path: Path) -> Path:
 
     # ── Body subtitles (word-by-word groups of 3–4 words) ─────────────────
     # Split body into words
+    timed_words = [
+        word for word in (spec.timed_words or []) if word.start_s >= spec.hook_duration_s - 0.05
+    ]
     raw_words = spec.body_text.split()
-    if not raw_words:
+    if timed_words:
+        body_offset = _find_body_offset(timed_words, raw_words, spec.hook_duration_s)
+        timed_body = timed_words[body_offset:]
+        slot_count = min(len(raw_words), len(timed_body))
+        if slot_count <= 0:
+            timed_body = []
+
+        GROUP_SIZE = 4
+        for i in range(0, slot_count, GROUP_SIZE):
+            group_slots = timed_body[i : i + GROUP_SIZE]
+            group_words = raw_words[i : i + GROUP_SIZE]
+            if not group_slots or not group_words:
+                continue
+            t_start = max(spec.hook_duration_s + 0.1, group_slots[0].start_s)
+            t_end = max(t_start + 0.1, group_slots[-1].end_s)
+            if t_end - t_start < 0.45:
+                t_end = min(spec.audio_duration_s, t_start + 0.45)
+            safe = " ".join(group_words).replace("\n", " ")
+            lines.append(
+                f"Dialogue: 0,{_ts(t_start)},{_ts(t_end)},Default,,0,0,0,,"
+                + safe
+                + "\n"
+            )
+    elif not raw_words:
         pass
     else:
-        # Group words into short phrases (3 words at a time for readability)
-        GROUP_SIZE = 3
+        # Group words into short phrases (4 words at a time to reduce flicker).
+        GROUP_SIZE = 4
         groups: list[str] = []
         for i in range(0, len(raw_words), GROUP_SIZE):
             groups.append(" ".join(raw_words[i : i + GROUP_SIZE]))
@@ -186,9 +253,10 @@ def generate_ass(spec: SubtitleSpec, output_path: Path) -> Path:
             t_start = scaled_timings[word_start_idx][0]
             t_end = scaled_timings[word_end_idx][1]
 
-            # Avoid zero-length events
-            if t_end - t_start < 0.1:
-                t_end = t_start + 0.3
+            # Keep subtitles long enough to read comfortably.
+            min_dur = 0.45
+            if t_end - t_start < min_dur:
+                t_end = min(spec.audio_duration_s, t_start + min_dur)
 
             # Clean text for ASS
             safe = group_text.replace("{", "").replace("}", "").replace("\n", " ")

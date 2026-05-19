@@ -71,53 +71,66 @@ TTS_TEMPERATURE = 0.36
 TTS_CFG_WEIGHT = 0.3
 TTS_SEED = 20260430
 TTS_CANDIDATES_PER_CHUNK = 3   # Generate N candidates and keep the best
+TTS_CANDIDATES_PER_CHUNK_CPU = 2
 TTS_MIN_CHUNK_CHARS = 60
 TTS_MAX_CHUNK_CHARS = 175
+TTS_CPU_MAX_CHUNK_CHARS = 140
 TTS_PAUSE_MIN_MS = 180         # Silence between chunks
 TTS_PAUSE_MAX_MS = 420
 TTS_CROSSFADE_MS = 55
+TTS_RESUME_PARTIALS = True
 
 # Loudness normalisation (EBU R128)
-TTS_NORMALIZE_LUFS = -27.0
-TTS_NORMALIZE_TP = -3.0
-TTS_NORMALIZE_LRA = 7.0
+# Shorts playback targets are typically much louder than long-form podcasts.
+TTS_NORMALIZE_LUFS = -17.0
+TTS_NORMALIZE_TP = -1.5
+TTS_NORMALIZE_LRA = 9.0
 
 # ── Video ──────────────────────────────────────────────────────────────────
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
 VIDEO_FPS = 30
-VIDEO_CRF = 22                 # H.264 quality (lower = better, larger file)
-VIDEO_PRESET = "fast"
+VIDEO_CRF = 24                 # H.264 quality (lower = better, larger file)
+VIDEO_PRESET = "medium"
+VIDEO_AUDIO_BITRATE = "128k"
+GAMEPLAY_INTERMEDIATE_CRF = 30
+GAMEPLAY_INTERMEDIATE_PRESET = "veryfast"
 
 # Gameplay background
-GAMEPLAY_BLUR_RADIUS = 7       # Soften the background
-GAMEPLAY_DARKEN = 0.52         # Multiplier applied to all colour channels (0–1)
+GAMEPLAY_BLUR_RADIUS = 5       # Soften the background without smearing details
+GAMEPLAY_DARKEN = 0.60         # Multiplier applied to all colour channels (0–1)
 
 # Reddit card geometry (pixels)
-CARD_WIDTH = 940               # Card width; side margins = (VIDEO_WIDTH - CARD_WIDTH) / 2
-CARD_X = (VIDEO_WIDTH - CARD_WIDTH) // 2   # = 70
+CARD_WIDTH = 900               # Narrower card gives more visible gameplay context
+CARD_X = (VIDEO_WIDTH - CARD_WIDTH) // 2
 CARD_PADDING = 34              # Inner padding on all sides
 CARD_CORNER_RADIUS = 18
 
 # Vertical bounds of the "viewport" through which the card is visible
-CARD_VIEWPORT_TOP = 120        # Where the card starts appearing
-CARD_VIEWPORT_BOTTOM = 1660    # Where the card stops (below = subtitle zone)
-CARD_VIEWPORT_H = CARD_VIEWPORT_BOTTOM - CARD_VIEWPORT_TOP  # 1540 px
+CARD_VIEWPORT_TOP = 140        # Where the card starts appearing
+CARD_VIEWPORT_BOTTOM = 1600    # Where the card stops (below = subtitle zone)
+CARD_VIEWPORT_H = CARD_VIEWPORT_BOTTOM - CARD_VIEWPORT_TOP
 
 # Scroll timing
 CARD_SCROLL_START_S = 4.5      # Seconds before scrolling begins
 CARD_SCROLL_END_MARGIN_S = 2.0 # Stop scrolling this many seconds before audio ends
+CARD_IDLE_BOB_PX = 14          # Gentle motion when the card does not need to scroll
+CARD_IDLE_SWAY_PX = 6
+CARD_IDLE_PERIOD_S = 7.5
 
 # Subtitle zone
-SUBTITLE_ZONE_TOP = 1670       # Top of subtitle band
+SUBTITLE_ZONE_TOP = 1620       # Top of subtitle band
 SUBTITLE_ZONE_BOTTOM = 1870    # Bottom of subtitle band (progress bar below)
-SUBTITLE_FONT_SIZE = 72        # Points in ASS coordinates (PlayResY=1920) — increased from 54
+SUBTITLE_FONT_SIZE = 62        # Large but less overpowering in 9:16
 SUBTITLE_FONT_NAME = "Segoe UI"  # Modern, clean font (falls back to Arial on Linux)
-SUBTITLE_LINE_MARGIN_V = 180   # ASS MarginV from bottom for Default style
+SUBTITLE_LINE_MARGIN_V = 230   # Keep captions higher above the progress bar
+SUBTITLE_TRANSCRIBE_MODEL = "tiny"
+SUBTITLE_TRANSCRIBE_BACKEND = "openai-whisper"
+SUBTITLE_TRANSCRIBE_LANGUAGE = "en"
 
 # Progress bar
 PROGRESS_BAR_Y = 1892          # Top of the bar
-PROGRESS_BAR_H = 16
+PROGRESS_BAR_H = 12
 PROGRESS_BAR_COLOR = "ff4500"  # Reddit orange
 
 # Branding strip (very top of frame)

@@ -175,8 +175,9 @@ def render_post_card(post: RedditPost, output_path: Path) -> int:
         + footer_h
         + P                        # bottom padding
     )
-    # Minimum height so card fills the viewport nicely
-    total_h = max(total_h, cfg.CARD_VIEWPORT_H + 40)
+    # Avoid forcing the card to viewport height; that creates large empty blocks
+    # on shorter posts and flattens visual pacing.
+    total_h = max(total_h, 860)
 
     # ── Second pass: draw everything ─────────────────────────────────────────
     img = Image.new("RGBA", (W, total_h), cfg.COLOR_CARD)
@@ -240,8 +241,8 @@ def render_post_card(post: RedditPost, output_path: Path) -> int:
 
     # Comment count
     gap = 28
-    draw.text((P + up_w + gap, cy), "💬", font=fonts["footer"], fill=cfg.COLOR_META)
-    em_w = int(draw.textlength("💬 ", font=fonts["footer"]))
+    draw.text((P + up_w + gap, cy), "•", font=fonts["footer"], fill=cfg.COLOR_META)
+    em_w = int(draw.textlength("• ", font=fonts["footer"]))
     draw.text((P + up_w + gap + em_w, cy), f"{comment_str} comments", font=fonts["footer"], fill=cfg.COLOR_META)
 
     # Paste the card onto a matching background

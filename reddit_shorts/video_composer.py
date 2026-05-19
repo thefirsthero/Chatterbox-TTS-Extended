@@ -99,7 +99,9 @@ def _build_gameplay_video(
                 f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,"
                 f"fps={fps}"
             ),
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-c:v", "libx264",
+            "-preset", cfg.GAMEPLAY_INTERMEDIATE_PRESET,
+            "-crf", str(cfg.GAMEPLAY_INTERMEDIATE_CRF),
             "-an", out,
         ]
         subprocess.run(cmd, check=True, capture_output=True)
@@ -207,11 +209,18 @@ def compose_video(
         # ── Card crop (panning) ───────────────────────────────────────────
         # If card fits in viewport, just centre it vertically. Otherwise scroll.
         if scroll_distance <= 0:
-            # Card shorter than viewport — centre it statically
+            # Card shorter than viewport — apply a subtle idle drift so the frame
+            # still feels alive on shorter posts.
+            motion_pad = max(cfg.CARD_IDLE_BOB_PX * 2, 24)
+            crop_y_expr = (
+                f"{motion_pad}+({cfg.CARD_IDLE_BOB_PX}*sin(2*PI*t/{cfg.CARD_IDLE_PERIOD_S:.2f}))"
+            )
             card_crop_filter = (
                 f"[1:v]scale={card_w}:-1[card_full];"
-                f"[card_full]pad={card_w}:{viewport_h}:0:(oh-ih)/2:color=#00000000[card];"
+                f"[card_full]pad={card_w}:{viewport_h + motion_pad * 2}:0:(oh-ih)/2:color=#00000000[card_pad];"
+                f"[card_pad]crop={card_w}:{viewport_h}:0:'{crop_y_expr}'[card];"
             )
+            overlay_x = f"{card_x}+({cfg.CARD_IDLE_SWAY_PX}*sin(2*PI*t/{cfg.CARD_IDLE_PERIOD_S:.2f}))"
         else:
             # Card is taller — crop a moving window
             crop_y_expr = (
@@ -221,10 +230,11 @@ def compose_video(
                 f"[1:v]scale={card_w}:-1[card_full];"
                 f"[card_full]crop={card_w}:{viewport_h}:0:'{crop_y_expr}'[card];"
             )
+            overlay_x = str(card_x)
 
         # ── Overlay card on gameplay ──────────────────────────────────────
         overlay_filter = (
-            f"[bg][card]overlay=x={card_x}:y={viewport_top}[v_card];"
+            f"[bg][card]overlay=x='{overlay_x}':y={viewport_top}[v_card];"
         )
 
         # ── Branding strip (top) ──────────────────────────────────────────
@@ -285,7 +295,7 @@ def compose_video(
             "-preset", cfg.VIDEO_PRESET,
             "-crf", str(cfg.VIDEO_CRF),
             "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
+            "-c:a", "aac", "-b:a", cfg.VIDEO_AUDIO_BITRATE,
             "-movflags", "+faststart",
             str(output_path),
         ]
