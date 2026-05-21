@@ -77,7 +77,7 @@ TTS_MAX_CHUNK_CHARS = 175
 TTS_CPU_MAX_CHUNK_CHARS = 140
 TTS_PAUSE_MIN_MS = 180         # Silence between chunks
 TTS_PAUSE_MAX_MS = 420
-TTS_CROSSFADE_MS = 55
+TTS_CROSSFADE_MS = 280         # Longer crossfade hides chunk seams better
 TTS_RESUME_PARTIALS = True
 
 # Loudness normalisation (EBU R128)
@@ -112,6 +112,7 @@ CARD_VIEWPORT_BOTTOM = 1600    # Where the card stops (below = subtitle zone)
 CARD_VIEWPORT_H = CARD_VIEWPORT_BOTTOM - CARD_VIEWPORT_TOP
 
 # Scroll timing
+HOOK_DURATION_S = 3.2          # How long the hook splash is displayed
 CARD_SCROLL_START_S = 4.5      # Seconds before scrolling begins
 CARD_SCROLL_END_MARGIN_S = 2.0 # Stop scrolling this many seconds before audio ends
 CARD_IDLE_BOB_PX = 14          # Gentle motion when the card does not need to scroll
@@ -122,7 +123,16 @@ CARD_IDLE_PERIOD_S = 7.5
 SUBTITLE_ZONE_TOP = 1620       # Top of subtitle band
 SUBTITLE_ZONE_BOTTOM = 1870    # Bottom of subtitle band (progress bar below)
 SUBTITLE_FONT_SIZE = 62        # Large but less overpowering in 9:16
-SUBTITLE_FONT_NAME = "Segoe UI"  # Modern, clean font (falls back to Arial on Linux)
+SUBTITLE_FONT_NAME = "Comic Sans MS"  # Bubbly fun font for short-form video
+# ── Subtitle colours (ASS uses BGR hex: &HAABBGGRR, AA=00 = fully opaque) ──
+# Yellow primary  : RGB(255,255,0)  → BGR 0x00FFFF  → &H0000FFFF
+# Black outline   : RGB(0,0,0)      → BGR 0x000000  → &H00000000
+# Dark back shadow: 50% opaque black                → &H80000000
+SUBTITLE_PRIMARY_COLOR = "&H0000FFFF"      # yellow
+SUBTITLE_OUTLINE_COLOR = "&H00000000"      # black
+SUBTITLE_BACK_COLOR    = "&H80000000"      # semi-transparent black shadow
+SUBTITLE_OUTLINE_SIZE  = 4.0              # thicker outline for TikTok look
+SUBTITLE_SHADOW_SIZE   = 0.8
 SUBTITLE_LINE_MARGIN_V = 230   # Keep captions higher above the progress bar
 SUBTITLE_TRANSCRIBE_MODEL = "tiny"
 SUBTITLE_TRANSCRIBE_BACKEND = "openai-whisper"

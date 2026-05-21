@@ -73,7 +73,120 @@ def _save_cached_chunk(chunk_path: Path, meta_path: Path, wav: torch.Tensor, sam
     )
 
 
-# ── Text preprocessing ──────────────────────────────────────────────────────
+# ── TTS text normalisation ──────────────────────────────────────────────────
+
+# Known subreddits with idiomatic spoken forms (CamelCase split often fails these)
+_SUBREDDIT_SPOKEN: dict[str, str] = {
+    "AmItheAsshole": "Am I The Asshole",
+    "AITA": "Am I The Asshole",
+    "relationship_advice": "relationship advice",
+    "legaladvice": "legal advice",
+    "tifu": "today I messed up",
+    "TrueOffMyChest": "True Off My Chest",
+    "confessions": "confessions",
+    "pettyrevenge": "petty revenge",
+    "ProRevenge": "pro revenge",
+    "MaliciousCompliance": "malicious compliance",
+    "entitledparents": "entitled parents",
+    "bridezillas": "bridezillas",
+    "offmychest": "off my chest",
+    "raisedbynarcissists": "raised by narcissists",
+    "weddingshaming": "wedding shaming",
+    "AmIOverreacting": "Am I Overreacting",
+}
+
+
+def _split_camel_case(name: str) -> str:
+    """'RelationshipAdvice' → 'Relationship Advice' (generic fallback)."""
+    # Insert space before a capital that follows a lower-case letter
+    result = re.sub(r"([a-z])([A-Z])", r"\1 \2", name)
+    # Handle consecutive caps like 'ACROCase' → 'ACRO Case'
+    result = re.sub(r"([A-Z]{2,})([A-Z][a-z])", r"\1 \2", result)
+    # Replace underscores (snake_case subreddit names)
+    result = result.replace("_", " ")
+    return result
+
+
+def _tts_normalize_text(text: str) -> str:
+    """
+    Rewrite patterns that a TTS model mis-pronounces into natural spoken English.
+
+    This is applied to the full narration text BEFORE it is chunked and sent
+    to ChatterboxTTS.  The original script text is kept unchanged for display /
+    subtitle purposes.
+    """
+    # ── Subreddit mentions ─────────────────────────────────────────────────
+    # r/AmItheAsshole  →  r slash Am I The Asshole
+    def _expand_subreddit(m: re.Match) -> str:
+        raw = m.group(1)
+        name = _SUBREDDIT_SPOKEN.get(raw) or _split_camel_case(raw)
+        return f"r slash {name}"
+    text = re.sub(r"\br/(\w+)", _expand_subreddit, text)
+
+    # ── User mentions ──────────────────────────────────────────────────────
+    # u/someuser  →  user someuser  (already handled by script_writer but be safe)
+    text = re.sub(r"\bu/(\w+)", r"user \1", text)
+
+    # ── Dollar amounts ─────────────────────────────────────────────────────
+    # $300/month  →  300 dollars a month
+    text = re.sub(
+        r"\$(\d[\d,]*)(?:\s*/\s*month|\s+per\s+month)",
+        lambda m: m.group(1).replace(",", "") + " dollars a month",
+        text,
+    )
+    # $1,500  →  1500 dollars
+    text = re.sub(
+        r"\$(\d[\d,]*)",
+        lambda m: m.group(1).replace(",", "") + " dollars",
+        text,
+    )
+
+    # ── Numbers with commas that TTS reads digit-by-digit ─────────────────
+    # 1,121  →  1121  (let TTS say "one thousand one hundred twenty-one")
+    text = re.sub(r"(?<!\w)(\d{1,3}),(\d{3})(?!\d)", r"\1\2", text)
+
+    # ── Common Reddit/internet abbreviations ───────────────────────────────
+    # (script_writer already handles AITA/NTA/YTA in the body; handle any
+    # that slip through in the hook, attribution, or comments)
+    abbrevs = {
+        r"\bAITA\b": "am I the asshole",
+        r"\bWIBTA\b": "would I be the asshole",
+        r"\bNTA\b": "not the asshole",
+        r"\bYTA\b": "you're the asshole",
+        r"\bESH\b": "everyone sucks here",
+        r"\bNAH\b": "no assholes here",
+        r"\bOP\b": "the original poster",
+        r"\bIMO\b": "in my opinion",
+        r"\bIMHO\b": "in my honest opinion",
+        r"\bTBH\b": "to be honest",
+        r"\bTBF\b": "to be fair",
+        r"\bIIRC\b": "if I recall correctly",
+        r"\bFYI\b": "for your information",
+        r"\bTLDR\b": "to summarize",
+        r"\bTL;DR\b": "to summarize",
+    }
+    for pattern, replacement in abbrevs.items():
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # ── Punctuation that causes unnatural pauses or artefacts ─────────────
+    # Ellipsis → short pause via comma
+    text = text.replace("…", ", ")
+    text = re.sub(r"\.{3,}", ", ", text)
+    # Em dash without surrounding spaces → add spaces so TTS treats it as a pause
+    text = re.sub(r"(?<!\s)—(?!\s)", " — ", text)
+    # Doubled dashes
+    text = re.sub(r"--+", " — ", text)
+
+    # ── Smart / curly quotes → straight (TTS tokenisers handle these better) ─
+    text = text.replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
+
+    # ── Tidy up any double spaces introduced above ─────────────────────────
+    text = re.sub(r" {2,}", " ", text)
+    return text
+
+
+# ── Text chunking ──────────────────────────────────────────────────────────
 
 def _split_sentences(text: str) -> list[str]:
     parts = re.split(r"(?<=[.!?])\s+", text)
@@ -163,6 +276,16 @@ def _artifact_score(wav: torch.Tensor, sample_rate: int) -> float:
     return float(score)
 
 
+def _normalize_seg_rms(seg: AudioSegment, target_dbfs: float = -20.0) -> AudioSegment:
+    """Adjust gain so all chunks land at the same loudness before crossfade assembly."""
+    if seg.dBFS == float("-inf"):
+        return seg  # silence, leave alone
+    delta = target_dbfs - seg.dBFS
+    # Clamp to ±12 dB so we don't amplify near-silent artefact chunks
+    delta = max(-12.0, min(12.0, delta))
+    return seg.apply_gain(delta)
+
+
 # ── Post-clean filter ────────────────────────────────────────────────────
 
 def _apply_post_clean(wav_path: str) -> None:
@@ -172,7 +295,23 @@ def _apply_post_clean(wav_path: str) -> None:
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", wav_path,
-            "-af", "highpass=f=60,lowpass=f=14000,alimiter=limit=0.97",
+            "-af", (
+                 # 1. Remove low-frequency rumble and 'woosh' artefacts
+                 "highpass=f=100,"
+                 # 2. Gentle high cut to tame harshness
+                 "lowpass=f=12000,"
+                 # 3. Small dip at 200 Hz to reduce muddiness between chunks
+                 "equalizer=f=200:width_type=o:width=2:g=-2,"
+                 # 4. Tiny presence boost at 3.5 kHz — helps voice clarity
+                 "equalizer=f=3500:width_type=o:width=2:g=1.5,"
+                 # 5. Per-frame loudness normalisation: evens out tonal/accent
+                 #    drift between independently generated chunks
+                 "dynaudnorm=p=0.9:m=100:r=0.9:n=1,"
+                 # 6. Compression to glue chunk-level dynamics together
+                 "acompressor=threshold=-26dB:ratio=3:attack=10:release=160:knee=5:makeup=1.5,"
+                 # 7. Hard limiter to prevent clipping after compression
+                 "alimiter=limit=0.94:level_in=1"
+            ),
             tmp,
         ]
         subprocess.run(cmd, check=True)
@@ -236,8 +375,9 @@ def generate_narration(
     if hasattr(model, "eval"):
         model.eval()
 
+    tts_text = _tts_normalize_text(text)
     max_chunk_chars = cfg.TTS_CPU_MAX_CHUNK_CHARS if device == "cpu" else cfg.TTS_MAX_CHUNK_CHARS
-    sentences = _split_sentences(text)
+    sentences = _split_sentences(tts_text)
     chunks = _chunk_sentences(sentences, max_chars=max_chunk_chars)
     if not chunks:
         raise ValueError("No text chunks produced.")
@@ -258,7 +398,8 @@ def generate_narration(
                 cached_seg, cached_pause_ms = _load_cached_chunk(chunk_file, meta_file, signature)
 
             if cached_seg is not None and cached_pause_ms is not None:
-                seg = cached_seg + AudioSegment.silent(duration=cached_pause_ms)
+                speech = _normalize_seg_rms(cached_seg).fade_in(40).fade_out(40)
+                seg = speech + AudioSegment.silent(duration=cached_pause_ms)
                 if assembled is None:
                     assembled = seg
                 else:
@@ -295,8 +436,8 @@ def generate_narration(
             pause_ms = random.randint(cfg.TTS_PAUSE_MIN_MS, cfg.TTS_PAUSE_MAX_MS)
             _save_cached_chunk(chunk_file, meta_file, best_wav, model.sr, signature, pause_ms)
 
-            seg = AudioSegment.from_wav(str(chunk_file))
-            seg = seg + AudioSegment.silent(duration=pause_ms)
+            speech = _normalize_seg_rms(AudioSegment.from_wav(str(chunk_file))).fade_in(40).fade_out(40)
+            seg = speech + AudioSegment.silent(duration=pause_ms)
 
             if assembled is None:
                 assembled = seg

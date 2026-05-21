@@ -150,13 +150,20 @@ def _build_ass_header() -> str:
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         # Default style — body subtitles, bottom-centre, white with thick black outline
+        # Default style — body subtitles, bottom-centre, yellow TikTok-style
         f"Style: Default,{cfg.SUBTITLE_FONT_NAME},{cfg.SUBTITLE_FONT_SIZE},"
-        "&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
-        f"-1,0,0,0,100,100,0.3,0,1,2.6,0.6,2,60,60,{cfg.SUBTITLE_LINE_MARGIN_V},1\n"
-        # Hook style — large, centred in the upper half, orange outline
-        "Style: Hook,Arial,72,"
-        "&H00FFFFFF,&H000000FF,&H000045FF,&H00000000,"
-        "-1,0,0,0,100,100,0,0,1,4,1,5,80,80,850,1\n"
+        f"{cfg.SUBTITLE_PRIMARY_COLOR},&H000000FF,"
+        f"{cfg.SUBTITLE_OUTLINE_COLOR},{cfg.SUBTITLE_BACK_COLOR},"
+        f"-1,0,0,0,100,100,0.3,0,1,"
+        f"{cfg.SUBTITLE_OUTLINE_SIZE},{cfg.SUBTITLE_SHADOW_SIZE},"
+        f"2,60,60,{cfg.SUBTITLE_LINE_MARGIN_V},1\n"
+        # Hook style — large, centred in the screen, yellow with dark outline
+        f"Style: Hook,{cfg.SUBTITLE_FONT_NAME},78,"
+        f"{cfg.SUBTITLE_PRIMARY_COLOR},&H000000FF,"
+        f"{cfg.SUBTITLE_OUTLINE_COLOR},{cfg.SUBTITLE_BACK_COLOR},"
+        f"-1,0,0,0,100,100,0,0,1,"
+        f"{cfg.SUBTITLE_OUTLINE_SIZE + 0.5},{cfg.SUBTITLE_SHADOW_SIZE},"
+        "5,80,80,0,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -171,7 +178,7 @@ class SubtitleSpec:
     hook_text: str
     body_text: str               # Full narration (hook already excluded)
     audio_duration_s: float
-    hook_duration_s: float = 3.2 # How long to show the hook splash
+    hook_duration_s: float = cfg.HOOK_DURATION_S  # How long to show the hook splash
     timed_words: Optional[list[TimedWord]] = None
 
 
@@ -190,9 +197,12 @@ def generate_ass(spec: SubtitleSpec, output_path: Path) -> Path:
     hook_clean = re.sub(r"\s+", " ", spec.hook_text).strip()
     # Replace long hook with shorter version if needed
     if len(hook_clean) > 120:
-        hook_clean = hook_clean[:117].rsplit(" ", 1)[0] + "…"
+        hook_clean = hook_clean[:117].rsplit(" ", 1)[0] + "\u2026"
+    # End the hook subtitle 0.6 s BEFORE the card appears so the two
+    # never coexist on screen even at frame-boundary precision.
+    hook_end_s = max(0.5, spec.hook_duration_s - 0.6)
     lines.append(
-        f"Dialogue: 0,{_ts(0.4)},{_ts(spec.hook_duration_s)},Hook,,0,0,0,,"
+        f"Dialogue: 0,{_ts(0.4)},{_ts(hook_end_s)},Hook,,0,0,0,,"
         + hook_clean.replace("\n", "\\N")
         + "\n"
     )

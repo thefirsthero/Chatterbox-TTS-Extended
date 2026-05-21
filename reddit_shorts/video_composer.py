@@ -234,7 +234,8 @@ def compose_video(
 
         # ── Overlay card on gameplay ──────────────────────────────────────
         overlay_filter = (
-            f"[bg][card]overlay=x='{overlay_x}':y={viewport_top}[v_card];"
+              f"[bg][card]overlay=x='{overlay_x}':y={viewport_top}"
+              f":enable='gte(t,{cfg.HOOK_DURATION_S})'[v_card];"
         )
 
         # ── Branding strip (top) ──────────────────────────────────────────

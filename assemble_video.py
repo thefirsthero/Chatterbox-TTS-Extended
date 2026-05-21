@@ -33,6 +33,25 @@ def get_duration(path: str) -> float:
         raise RuntimeError(f"Could not read duration of {path}: {result.stderr}")
 
 
+def _run_checked(cmd: list[str], step_name: str) -> None:
+    """Run subprocess and raise readable error output if it fails."""
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr_tail = (exc.stderr or "").strip().splitlines()[-25:]
+        stdout_tail = (exc.stdout or "").strip().splitlines()[-10:]
+        details = []
+        if stderr_tail:
+            details.append("stderr:\n" + "\n".join(stderr_tail))
+        if stdout_tail:
+            details.append("stdout:\n" + "\n".join(stdout_tail))
+        debug = "\n\n".join(details) if details else "No ffmpeg output captured."
+        raise RuntimeError(
+            f"{step_name} failed (exit {exc.returncode}).\n"
+            f"Command: {' '.join(cmd)}\n\n{debug}"
+        ) from exc
+
+
 def discover_clips(clips_dir: Path) -> list[Path]:
     exts = {".mp4", ".mov", ".webm", ".mkv"}
     clips = [p for p in clips_dir.iterdir() if p.suffix.lower() in exts]
@@ -86,7 +105,8 @@ def assemble(clips_dir: Path, audio_path: Path, output_path: Path,
     clips = discover_clips(clips_dir)
     print(f"[video] Found {len(clips)} source clip(s): {[c.name for c in clips]}")
 
-    clip_list = build_looped_clip_list(clips, audio_duration + 10)  # +10s buffer
+    target_video_duration = audio_duration + 10  # small buffer before final trim
+    clip_list = build_looped_clip_list(clips, target_video_duration)
     print(f"[video] Built loop sequence of {len(clip_list)} clips")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +116,10 @@ def assemble(clips_dir: Path, audio_path: Path, output_path: Path,
         normalised = []
         ref_w, ref_h = None, None
 
+        remaining_duration = target_video_duration
         for i, clip in enumerate(clip_list):
+            if remaining_duration <= 0:
+                break
             out = os.path.join(tmp, f"norm_{i:04d}.mp4")
             # Probe first clip to get resolution
             if ref_w is None:
@@ -116,10 +139,25 @@ def assemble(clips_dir: Path, audio_path: Path, output_path: Path,
                 "-vf", f"scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
                        f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,fps={target_fps}",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-t", f"{remaining_duration:.3f}",
                 "-an", out,
             ]
-            subprocess.run(cmd, check=True, capture_output=True)
+            try:
+                _run_checked(cmd, f"Clip normalisation ({clip.name})")
+            except RuntimeError:
+                # Retry with conservative x264 settings for occasional platform-specific ffmpeg crashes.
+                retry_cmd = [
+                    "ffmpeg", "-y", "-threads", "1", "-i", str(clip),
+                    "-vf", f"scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
+                           f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,fps={target_fps}",
+                    "-pix_fmt", "yuv420p",
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                    "-t", f"{remaining_duration:.3f}",
+                    "-an", out,
+                ]
+                _run_checked(retry_cmd, f"Clip normalisation retry ({clip.name})")
             normalised.append(out)
+            remaining_duration -= get_duration(out)
 
         # Step 2: concatenate (simple concat — clips already normalised)
         concat_list = write_concat_list([Path(p) for p in normalised], tmp)
@@ -129,7 +167,7 @@ def assemble(clips_dir: Path, audio_path: Path, output_path: Path,
             "-f", "concat", "-safe", "0", "-i", concat_list,
             "-c", "copy", raw_video,
         ]
-        subprocess.run(concat_cmd, check=True, capture_output=True)
+        _run_checked(concat_cmd, "Concat stage")
 
         # Step 3: trim to exact audio duration and mux audio
         final_cmd = [
@@ -143,7 +181,7 @@ def assemble(clips_dir: Path, audio_path: Path, output_path: Path,
             "-shortest",
             str(output_path),
         ]
-        subprocess.run(final_cmd, check=True, capture_output=True)
+        _run_checked(final_cmd, "Final mux stage")
 
     size_mb = output_path.stat().st_size / 1_048_576
     print(f"[video] Done → {output_path}  ({size_mb:.1f} MB, {audio_duration:.0f}s)")
