@@ -66,17 +66,17 @@ SAFETY_BLOCKED_REGEX_PATTERNS = [
 ]
 
 # ── TTS / audio ───────────────────────────────────────────────────────────
-TTS_EXAGGERATION = 0.10
-TTS_TEMPERATURE = 0.22
-TTS_CFG_WEIGHT = 0.45
+TTS_EXAGGERATION = 0.14
+TTS_TEMPERATURE = 0.28
+TTS_CFG_WEIGHT = 0.40
 TTS_SEED = 20260430
 TTS_CANDIDATES_PER_CHUNK = 1   # Keep voice identity stable across chunks/runs
 TTS_CANDIDATES_PER_CHUNK_CPU = 1
 TTS_MIN_CHUNK_CHARS = 60
 TTS_MAX_CHUNK_CHARS = 175
 TTS_CPU_MAX_CHUNK_CHARS = 220
-TTS_PAUSE_MIN_MS = 70          # Shorter pauses for faster narration pace
-TTS_PAUSE_MAX_MS = 170
+TTS_PAUSE_MIN_MS = 45          # Used as fallback only; main pause logic is punctuation-driven
+TTS_PAUSE_MAX_MS = 140
 TTS_CROSSFADE_MS = 180
 TTS_RESUME_PARTIALS = True
 

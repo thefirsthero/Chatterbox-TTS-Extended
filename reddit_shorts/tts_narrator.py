@@ -286,6 +286,25 @@ def _normalize_seg_rms(seg: AudioSegment, target_dbfs: float = -20.0) -> AudioSe
     return seg.apply_gain(delta)
 
 
+def _pause_for_chunk_text(chunk_text: str) -> int:
+    """Choose a deterministic pause from the chunk's final punctuation."""
+    stripped = chunk_text.rstrip()
+    if not stripped:
+        return cfg.TTS_PAUSE_MIN_MS
+
+    if stripped.endswith(("?", "!")):
+        return 170
+    if stripped.endswith("."):
+        return 135
+    if stripped.endswith((":", ";")):
+        return 110
+    if stripped.endswith(","):
+        return 85
+    if stripped.endswith(("-",)):
+        return 75
+    return 60
+
+
 # ── Post-clean filter ────────────────────────────────────────────────────
 
 def _apply_post_clean(wav_path: str) -> None:
@@ -296,11 +315,13 @@ def _apply_post_clean(wav_path: str) -> None:
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", wav_path,
               "-af", (
-                  # Keep cleanup conservative; aggressive dynamics processing caused pumping/whoosh.
-                  "highpass=f=80,"
-                  "lowpass=f=11000,"
-                  "equalizer=f=260:width_type=o:width=1.8:g=-1.2,"
-                  "alimiter=limit=0.96:level_in=1"
+                  # Add slight warmth/presence while avoiding heavy dynamics that caused artifacts.
+                  "highpass=f=70,"
+                  "lowpass=f=12000,"
+                  "equalizer=f=190:width_type=o:width=1.5:g=0.8,"
+                  "equalizer=f=260:width_type=o:width=1.8:g=-0.9,"
+                  "equalizer=f=3200:width_type=o:width=1.6:g=0.5,"
+                  "alimiter=limit=0.97:level_in=1"
               ),
             tmp,
         ]
@@ -429,7 +450,7 @@ def generate_narration(
             if best_wav is None:
                 raise RuntimeError(f"Chunk {idx}: all candidates failed")
 
-            pause_ms = random.randint(cfg.TTS_PAUSE_MIN_MS, cfg.TTS_PAUSE_MAX_MS)
+            pause_ms = _pause_for_chunk_text(chunk_text)
             _save_cached_chunk(chunk_file, meta_file, best_wav, model.sr, signature, pause_ms)
 
             speech = _normalize_seg_rms(AudioSegment.from_wav(str(chunk_file))).fade_in(40).fade_out(40)
