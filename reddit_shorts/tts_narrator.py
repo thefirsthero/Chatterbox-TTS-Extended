@@ -39,10 +39,10 @@ def _chunk_cache_dir(output_wav: Path) -> Path:
     return output_wav.parent / "_tts_chunks" / output_wav.stem
 
 
-def _chunk_cache_signature(chunk_text: str, voice_profile: Path) -> str:
+def _chunk_cache_signature(chunk_text: str, voice_profile: Optional[Path]) -> str:
     payload = {
         "chunk_text": chunk_text,
-        "voice_profile": str(voice_profile),
+        "voice_profile": str(voice_profile) if voice_profile else "builtin_default_voice",
         "exaggeration": cfg.TTS_EXAGGERATION,
         "cfg_weight": cfg.TTS_CFG_WEIGHT,
         "temperature": cfg.TTS_TEMPERATURE,
@@ -295,23 +295,13 @@ def _apply_post_clean(wav_path: str) -> None:
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", wav_path,
-            "-af", (
-                 # 1. Remove low-frequency rumble and 'woosh' artefacts
-                 "highpass=f=100,"
-                 # 2. Gentle high cut to tame harshness
-                 "lowpass=f=12000,"
-                 # 3. Small dip at 200 Hz to reduce muddiness between chunks
-                 "equalizer=f=200:width_type=o:width=2:g=-2,"
-                 # 4. Tiny presence boost at 3.5 kHz — helps voice clarity
-                 "equalizer=f=3500:width_type=o:width=2:g=1.5,"
-                 # 5. Per-frame loudness normalisation: evens out tonal/accent
-                 #    drift between independently generated chunks
-                 "dynaudnorm=p=0.9:m=100:r=0.9:n=1,"
-                 # 6. Compression to glue chunk-level dynamics together
-                 "acompressor=threshold=-26dB:ratio=3:attack=10:release=160:knee=5:makeup=1.5,"
-                 # 7. Hard limiter to prevent clipping after compression
-                 "alimiter=limit=0.94:level_in=1"
-            ),
+              "-af", (
+                  # Keep cleanup conservative; aggressive dynamics processing caused pumping/whoosh.
+                  "highpass=f=80,"
+                  "lowpass=f=11000,"
+                  "equalizer=f=260:width_type=o:width=1.8:g=-1.2,"
+                  "alimiter=limit=0.96:level_in=1"
+              ),
             tmp,
         ]
         subprocess.run(cmd, check=True)
@@ -355,22 +345,28 @@ def generate_narration(
 
     if voice_profile is None:
         voice_profile = cfg.VOICE_PROFILE
-
-    if not Path(voice_profile).is_file():
-        raise FileNotFoundError(
-            f"Voice profile not found: {voice_profile}\n"
-            "Run the Chatterbox Gradio app and save a locked voice profile first."
-        )
+    if voice_profile is not None:
+        voice_profile = Path(voice_profile)
+        if not voice_profile.is_file():
+            raise FileNotFoundError(
+                f"Voice profile not found: {voice_profile}\n"
+                "If you want a custom voice, supply a valid profile file."
+            )
 
     device = _detect_device()
     print(f"[tts] Loading ChatterboxTTS on {device}…")
     model = ChatterboxTTS.from_pretrained(device)
     print(f"[tts] Model loaded. Sample rate: {model.sr}")
 
-    # Load voice profile and set as model default
-    conds = Conditionals.load(str(voice_profile), map_location="cpu").to(device)
-    model.default_conds = conds
-    print(f"[tts] Loaded voice profile: {voice_profile}")
+    # Either use an explicit saved profile or the model's built-in default voice.
+    if voice_profile is not None:
+        conds = Conditionals.load(str(voice_profile), map_location="cpu").to(device)
+        model.default_conds = conds
+        print(f"[tts] Loaded voice profile: {voice_profile}")
+    else:
+        if model.default_conds is None:
+            raise RuntimeError("Built-in default voice is unavailable in the pretrained checkpoint.")
+        print("[tts] Using built-in soothing default voice")
 
     if hasattr(model, "eval"):
         model.eval()
@@ -392,7 +388,7 @@ def generate_narration(
         for idx, chunk_text in enumerate(chunks):
             chunk_file = tmp_dir / f"chunk_{idx:04d}.wav"
             meta_file = tmp_dir / f"chunk_{idx:04d}.json"
-            signature = _chunk_cache_signature(chunk_text, Path(voice_profile))
+            signature = _chunk_cache_signature(chunk_text, voice_profile)
             cached_seg, cached_pause_ms = (None, None)
             if cfg.TTS_RESUME_PARTIALS:
                 cached_seg, cached_pause_ms = _load_cached_chunk(chunk_file, meta_file, signature)

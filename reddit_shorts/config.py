@@ -12,7 +12,7 @@ OUTPUT_DIR = ROOT / "output" / "shorts"
 GAMEPLAY_DIR = ROOT / "video_clips" / "raw"
 PROCESSED_GAMEPLAY_DIR = ROOT / "video_clips" / "processed"
 TEMP_DIR = ROOT / "temp" / "shorts"
-VOICE_PROFILE = ROOT / "output" / "voice_profiles" / "ginny_ultrasoft_locked.pt"
+VOICE_PROFILE = None
 DONE_POSTS_FILE = OUTPUT_DIR / "done_posts.txt"
 
 # ── Reddit scraping ────────────────────────────────────────────────────────
@@ -66,18 +66,18 @@ SAFETY_BLOCKED_REGEX_PATTERNS = [
 ]
 
 # ── TTS / audio ───────────────────────────────────────────────────────────
-TTS_EXAGGERATION = 0.22
-TTS_TEMPERATURE = 0.36
-TTS_CFG_WEIGHT = 0.3
+TTS_EXAGGERATION = 0.10
+TTS_TEMPERATURE = 0.22
+TTS_CFG_WEIGHT = 0.45
 TTS_SEED = 20260430
-TTS_CANDIDATES_PER_CHUNK = 3   # Generate N candidates and keep the best
-TTS_CANDIDATES_PER_CHUNK_CPU = 2
+TTS_CANDIDATES_PER_CHUNK = 1   # Keep voice identity stable across chunks/runs
+TTS_CANDIDATES_PER_CHUNK_CPU = 1
 TTS_MIN_CHUNK_CHARS = 60
 TTS_MAX_CHUNK_CHARS = 175
-TTS_CPU_MAX_CHUNK_CHARS = 140
-TTS_PAUSE_MIN_MS = 180         # Silence between chunks
-TTS_PAUSE_MAX_MS = 420
-TTS_CROSSFADE_MS = 280         # Longer crossfade hides chunk seams better
+TTS_CPU_MAX_CHUNK_CHARS = 220
+TTS_PAUSE_MIN_MS = 70          # Shorter pauses for faster narration pace
+TTS_PAUSE_MAX_MS = 170
+TTS_CROSSFADE_MS = 180
 TTS_RESUME_PARTIALS = True
 
 # Loudness normalisation (EBU R128)
