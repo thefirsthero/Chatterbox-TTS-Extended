@@ -149,20 +149,9 @@ def process_post(
     # ── Step 4: Generate subtitles ───────────────────────────────────────────
     print("[pipeline] Step 4/6 — Generating subtitles…")
     subtitle_ass = out_dir / "subtitles.ass"
-    subtitle_attribution = (
-        f"This was posted to r/{post.subreddit} by user {post.author}, "
-        f"with {post.upvotes:,} upvotes."
-    )
-    subtitle_body_text = (
-        subtitle_attribution
-        + "\n\n"
-        + script.body
-        + ("\n\n" + script.comment_section if script.comment_section else "")
-        + "\n\n"
-        + script.cta
-    )
-    # Use full narration as Whisper guidance so timed words line up with actual audio order.
-    timed_words = transcribe_word_timestamps(audio_wav, expected_text=script.full_text)
+    subtitle_body_text = script.full_text
+    # Avoid prompt-guided timestamp bias; raw ASR timings are more reliable.
+    timed_words = transcribe_word_timestamps(audio_wav)
     spec = SubtitleSpec(
         hook_text=script.hook,
         body_text=subtitle_body_text,

@@ -59,7 +59,6 @@ def _transcribe_openai(audio_path: Path, model_name: str, expected_text: Optiona
         word_timestamps=True,
         fp16=False,
         condition_on_previous_text=False,
-        initial_prompt=(expected_text[:220] if expected_text else None),
     )
 
     words: list[TimedWord] = []
@@ -85,7 +84,6 @@ def _transcribe_faster(audio_path: Path, model_name: str, expected_text: Optiona
         beam_size=1,
         best_of=1,
         condition_on_previous_text=False,
-        initial_prompt=(expected_text[:220] if expected_text else None),
     )
 
     words: list[TimedWord] = []
@@ -117,7 +115,6 @@ def transcribe_word_timestamps(audio_path: Path, expected_text: Optional[str] = 
             else:
                 words = _transcribe_openai(audio_path, cfg.SUBTITLE_TRANSCRIBE_MODEL, expected_text)
             if words:
-                words = _match_script_words(words, expected_text)
                 print(f"[transcribe] {backend} produced {len(words)} timed words")
                 return words
         except Exception as exc:

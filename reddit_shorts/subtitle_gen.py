@@ -12,7 +12,7 @@ ASS format is used because it supports:
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -25,11 +25,11 @@ def _norm_word(word: str) -> str:
 
 
 def _find_body_offset(timed_words: list[TimedWord], script_words: list[str], hook_end_s: float) -> int:
-    """Find the best timed-word offset where body script likely begins."""
+    """Find the best timed-word offset where a target phrase likely begins."""
     if not timed_words or not script_words:
         return 0
 
-    probe = [_norm_word(word) for word in script_words[:6] if _norm_word(word)]
+    probe = [_norm_word(word) for word in script_words[:12] if _norm_word(word)]
     if not probe:
         return 0
 
@@ -201,41 +201,35 @@ def generate_ass(spec: SubtitleSpec, output_path: Path) -> Path:
     # End the hook subtitle 0.6 s BEFORE the card appears so the two
     # never coexist on screen even at frame-boundary precision.
     hook_end_s = max(0.5, spec.hook_duration_s - 0.6)
-    lines.append(
-        f"Dialogue: 0,{_ts(0.4)},{_ts(hook_end_s)},Hook,,0,0,0,,"
-        + hook_clean.replace("\n", "\\N")
-        + "\n"
-    )
 
     # ── Body subtitles (word-by-word groups of 3–4 words) ─────────────────
     # Split body into words
-    timed_words = [
-        word for word in (spec.timed_words or []) if word.start_s >= spec.hook_duration_s - 0.05
-    ]
+    timed_words = list(spec.timed_words or [])
     raw_words = spec.body_text.split()
+    body_entries: list[tuple[float, float, str]] = []
+
     if timed_words:
-        body_offset = _find_body_offset(timed_words, raw_words, spec.hook_duration_s)
-        timed_body = timed_words[body_offset:]
-        slot_count = min(len(raw_words), len(timed_body))
+        # Keep bottom subtitles locked to the real spoken words from the start
+        # of audio. This avoids delayed starts when script matching drifts.
+        timed_body = timed_words
+        slot_count = len(timed_body)
         if slot_count <= 0:
             timed_body = []
 
         GROUP_SIZE = 4
         for i in range(0, slot_count, GROUP_SIZE):
             group_slots = timed_body[i : i + GROUP_SIZE]
-            group_words = raw_words[i : i + GROUP_SIZE]
-            if not group_slots or not group_words:
+            if not group_slots:
                 continue
-            t_start = max(spec.hook_duration_s + 0.1, group_slots[0].start_s)
+            t_start = max(0.05, group_slots[0].start_s)
             t_end = max(t_start + 0.1, group_slots[-1].end_s)
             if t_end - t_start < 0.45:
                 t_end = min(spec.audio_duration_s, t_start + 0.45)
-            safe = " ".join(group_words).replace("\n", " ")
-            lines.append(
-                f"Dialogue: 0,{_ts(t_start)},{_ts(t_end)},Default,,0,0,0,,"
-                + safe
-                + "\n"
-            )
+            safe = " ".join((slot.word or "").strip() for slot in group_slots)
+            safe = re.sub(r"\s+", " ", safe).strip()
+            if not safe:
+                continue
+            body_entries.append((t_start, t_end, safe))
     elif not raw_words:
         pass
     else:
@@ -271,11 +265,20 @@ def generate_ass(spec: SubtitleSpec, output_path: Path) -> Path:
             # Clean text for ASS
             safe = group_text.replace("{", "").replace("}", "").replace("\n", " ")
 
-            lines.append(
-                f"Dialogue: 0,{_ts(t_start)},{_ts(t_end)},Default,,0,0,0,,"
-                + safe
-                + "\n"
-            )
+            body_entries.append((t_start, t_end, safe))
+
+    lines.append(
+        f"Dialogue: 0,{_ts(0.0)},{_ts(hook_end_s)},Hook,,0,0,0,,"
+        + hook_clean.replace("\n", "\\N")
+        + "\n"
+    )
+
+    for t_start, t_end, safe in body_entries:
+        lines.append(
+            f"Dialogue: 0,{_ts(t_start)},{_ts(t_end)},Default,,0,0,0,,"
+            + safe
+            + "\n"
+        )
 
     content = "".join(lines)
     output_path.write_text(content, encoding="utf-8-sig")  # BOM for compatibility
