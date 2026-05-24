@@ -9,6 +9,7 @@ from pathlib import Path
 # ── Root paths ─────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = ROOT / "output" / "shorts"
+FINAL_VIDEOS_DIR = ROOT / "output" / "videos"
 GAMEPLAY_DIR = ROOT / "video_clips" / "raw"
 PROCESSED_GAMEPLAY_DIR = ROOT / "video_clips" / "processed"
 TEMP_DIR = ROOT / "temp" / "shorts"
@@ -122,7 +123,7 @@ CARD_IDLE_PERIOD_S = 7.5
 # Subtitle zone
 SUBTITLE_ZONE_TOP = 1620       # Top of subtitle band
 SUBTITLE_ZONE_BOTTOM = 1870    # Bottom of subtitle band (progress bar below)
-SUBTITLE_FONT_SIZE = 62        # Large but less overpowering in 9:16
+SUBTITLE_FONT_SIZE = 72        # Bigger bottom subtitles for easier mobile readability
 SUBTITLE_FONT_NAME = "Comic Sans MS"  # Bubbly fun font for short-form video
 # ── Subtitle colours (ASS uses BGR hex: &HAABBGGRR, AA=00 = fully opaque) ──
 # Yellow primary  : RGB(255,255,0)  → BGR 0x00FFFF  → &H0000FFFF
@@ -144,7 +145,7 @@ PROGRESS_BAR_H = 12
 PROGRESS_BAR_COLOR = "ff4500"  # Reddit orange
 
 # Branding strip (very top of frame)
-BRANDING_TEXT = f"r/{SUBREDDIT}  ·  ASMR Stories"
+BRANDING_TEXT = f"r/{SUBREDDIT}  ·  Reddit Storytime"
 BRANDING_FONT_SIZE = 30
 BRANDING_Y = 52
 

@@ -9,6 +9,7 @@ Or import and call process_post() from your own script.
 
 import json
 import os
+import shutil
 import sys
 import traceback
 from datetime import datetime
@@ -52,6 +53,15 @@ def _append_safety_skip_log(post: RedditPost, matched_terms: list[str]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _publish_final_video(post_id: str, source_video: Path) -> Path:
+    """Copy the per-post render into the canonical videos destination."""
+    dest_dir = cfg.FINAL_VIDEOS_DIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    published_path = dest_dir / f"{post_id}.mp4"
+    shutil.copy2(source_video, published_path)
+    return published_path
+
+
 def process_post(
     post: RedditPost,
     gameplay_clips: Optional[list[Path]] = None,
@@ -68,8 +78,10 @@ def process_post(
     final_video = out_dir / "video.mp4"
 
     if skip_if_exists and final_video.exists():
+        published_video = _publish_final_video(post.post_id, final_video)
         print(f"[pipeline] Skipping {post.post_id} — video already exists")
-        return final_video
+        print(f"[pipeline] Published: {published_video}")
+        return published_video
 
     if safety_filter:
         terms = blocked_terms if blocked_terms is not None else cfg.SAFETY_BLOCKED_TERMS
@@ -177,12 +189,15 @@ def process_post(
         gameplay_clips=gameplay_clips,
     )
 
+    published_video = _publish_final_video(post.post_id, final_video)
+
     # ── Step 6: Mark done ────────────────────────────────────────────────────
     print("[pipeline] Step 6/6 — Marking post as done…")
     mark_post_done(post.post_id)
 
-    print(f"\n[pipeline] ✓ Video ready: {final_video}\n")
-    return final_video
+    print(f"\n[pipeline] ✓ Video ready: {final_video}")
+    print(f"[pipeline] ✓ Published to: {published_video}\n")
+    return published_video
 
 
 def run_batch(
