@@ -57,7 +57,20 @@ def _publish_final_video(post_id: str, source_video: Path) -> Path:
     """Copy the per-post render into the canonical videos destination."""
     dest_dir = cfg.FINAL_VIDEOS_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
-    published_path = dest_dir / f"{post_id}.mp4"
+    meta_path = _post_output_dir(post_id) / "post_meta.json"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    subreddit = "subreddit"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            processed_at = meta.get("processed_at")
+            if processed_at:
+                timestamp = datetime.fromisoformat(processed_at).strftime("%Y%m%d_%H%M%S")
+            subreddit = str(meta.get("subreddit") or subreddit)
+        except Exception:
+            pass
+    safe_subreddit = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in subreddit).strip("-") or "subreddit"
+    published_path = dest_dir / f"{timestamp}__{safe_subreddit}__{post_id}.mp4"
     shutil.copy2(source_video, published_path)
     return published_path
 
@@ -130,7 +143,7 @@ def process_post(
     print(f"[pipeline] Script: {len(script.full_text)} chars")
 
     # ── Step 2: Generate ASMR audio ─────────────────────────────────────────
-    print("[pipeline] Step 2/6 — Generating ASMR audio…")
+    print("[pipeline] Step 2/6 — Generating narration audio…")
     # Lazy import keeps CLI dry-runs fast and avoids heavyweight model imports
     # unless we actually render audio/video.
     from reddit_shorts.tts_narrator import generate_narration, get_audio_duration
@@ -248,6 +261,7 @@ def run_batch(
         min_upvotes=min_upvotes,
         min_body_chars=min_body_chars,
         max_body_chars=max_body_chars,
+        desired_count=max_videos,
     )
     if not posts:
         print("[pipeline] No posts passed the filters. Try changing sort/subreddit/min_upvotes.")

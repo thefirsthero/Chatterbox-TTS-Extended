@@ -294,7 +294,7 @@ def render_hook_overlay(hook_text: str, output_path: Path) -> None:
 
     # Subreddit badge strip at top
     badge_font = _load_font(cfg.FONT_BOLD, 30)
-    badge_text = f"r/{cfg.SUBREDDIT}  ·  ASMR"
+    badge_text = "Reddit Storytime"
     bw = int(draw.textlength(badge_text, font=badge_font))
     bx = (W - bw) // 2
     draw.text((bx + 2, 58), badge_text, font=badge_font, fill=(0, 0, 0, 180))

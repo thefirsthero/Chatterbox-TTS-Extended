@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 OUTPUT_DIR = ROOT / "output" / "shorts"
 FINAL_VIDEOS_DIR = ROOT / "output" / "videos"
+SCRAPE_CACHE_DIR = ROOT / "output" / "cache" / "reddit_scrapes"
 GAMEPLAY_DIR = ROOT / "video_clips" / "raw"
 PROCESSED_GAMEPLAY_DIR = ROOT / "video_clips" / "processed"
 TEMP_DIR = ROOT / "temp" / "shorts"

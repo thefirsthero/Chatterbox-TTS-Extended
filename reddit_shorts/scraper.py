@@ -10,10 +10,14 @@ Set these in a .env file (loaded by pipeline.py via python-dotenv) or export
 them in your shell before running the pipeline.
 """
 
+import hashlib
+import json
 import os
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional
 
@@ -56,6 +60,91 @@ def _load_done_posts() -> set[str]:
     if not path.exists():
         return set()
     return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+
+def _serialize_post(post: RedditPost) -> dict:
+    return {
+        "post_id": post.post_id,
+        "title": post.title,
+        "body": post.body,
+        "author": post.author,
+        "upvotes": post.upvotes,
+        "num_comments": post.num_comments,
+        "flair": post.flair,
+        "url": post.url,
+        "subreddit": post.subreddit,
+        "top_comments": post.top_comments,
+    }
+
+
+def _deserialize_post(data: dict) -> RedditPost:
+    return RedditPost(
+        post_id=str(data.get("post_id") or ""),
+        title=str(data.get("title") or ""),
+        body=str(data.get("body") or ""),
+        author=str(data.get("author") or "[deleted]"),
+        upvotes=int(data.get("upvotes", 0) or 0),
+        num_comments=int(data.get("num_comments", 0) or 0),
+        flair=(data.get("flair") or None),
+        url=str(data.get("url") or ""),
+        subreddit=str(data.get("subreddit") or "unknown"),
+        top_comments=[str(item) for item in data.get("top_comments", []) if str(item).strip()],
+    )
+
+
+def _scrape_cache_query(
+    subreddit_name: str,
+    fetch_limit: int,
+    min_upvotes: int,
+    min_body_chars: int,
+    max_body_chars: int,
+    flair_whitelist: Optional[list[str]],
+    sort: str,
+    top_time: str,
+) -> dict:
+    return {
+        "subreddit_name": subreddit_name,
+        "fetch_limit": int(fetch_limit),
+        "min_upvotes": int(min_upvotes),
+        "min_body_chars": int(min_body_chars),
+        "max_body_chars": int(max_body_chars),
+        "flair_whitelist": sorted(flair_whitelist or []),
+        "sort": sort,
+        "top_time": top_time,
+    }
+
+
+def _scrape_cache_path(query: dict) -> Path:
+    payload = json.dumps(query, sort_keys=True, separators=(",", ":"))
+    cache_key = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    return cfg.SCRAPE_CACHE_DIR / query["subreddit_name"] / f"{cache_key}.json"
+
+
+def _load_scrape_cache(query: dict) -> list[RedditPost] | None:
+    path = _scrape_cache_path(query)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("query") != query:
+            return None
+        return [_deserialize_post(item) for item in payload.get("posts", [])]
+    except Exception:
+        return None
+
+
+def _save_scrape_cache(query: dict, posts: list[RedditPost], source: str) -> Path:
+    path = _scrape_cache_path(query)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "query": query,
+        "cached_at": datetime.now().isoformat(timespec="seconds"),
+        "source": source,
+        "count": len(posts),
+        "posts": [_serialize_post(post) for post in posts],
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def is_post_done(post_id: str) -> bool:
@@ -410,6 +499,7 @@ def scrape_posts(
     min_upvotes: int = cfg.MIN_UPVOTES,
     min_body_chars: int = cfg.MIN_BODY_CHARS,
     max_body_chars: int = cfg.MAX_BODY_CHARS,
+    desired_count: int | None = None,
     flair_whitelist: Optional[list[str]] = None,
     skip_done: bool = True,
     sort: str = "hot",          # "hot" | "top" | "new"
@@ -427,11 +517,38 @@ def scrape_posts(
     if flair_whitelist is None:
         flair_whitelist = cfg.FLAIR_WHITELIST
 
+    query = _scrape_cache_query(
+        subreddit_name=subreddit_name,
+        fetch_limit=fetch_limit,
+        min_upvotes=min_upvotes,
+        min_body_chars=min_body_chars,
+        max_body_chars=max_body_chars,
+        flair_whitelist=flair_whitelist,
+        sort=sort,
+        top_time=top_time,
+    )
+    desired_count = desired_count or fetch_limit
+    done_ids = _load_done_posts() if skip_done else set()
+
+    cached_posts = _load_scrape_cache(query)
+    if cached_posts is not None:
+        cached_posts = [post for post in cached_posts if post.post_id not in done_ids]
+        if len(cached_posts) >= desired_count:
+            print(
+                f"[scraper] Cache hit: loaded {len(cached_posts)} post(s) for r/{subreddit_name} "
+                f"(sort={sort}, top_time={top_time})"
+            )
+            return cached_posts
+        print(
+            f"[scraper] Cache hit but only {len(cached_posts)} post(s) remain after done-post filtering; "
+            "refreshing live source..."
+        )
+
     # Prefer OAuth/PRAW mode when credentials are present, but gracefully
     # fall back to public JSON mode for accounts blocked from app creation.
     try:
         reddit = build_reddit_client()
-        done = _load_done_posts() if skip_done else set()
+        done = done_ids
 
         subreddit = reddit.subreddit(subreddit_name)
         if sort == "top":
@@ -501,19 +618,28 @@ def scrape_posts(
             ))
 
         posts.sort(key=lambda p: p.upvotes, reverse=True)
+        _save_scrape_cache(query, posts, source="oauth")
         print(f"[scraper] OAuth mode: fetched {fetch_limit} posts → {len(posts)} passed filters from r/{subreddit_name}")
         return posts
 
     except Exception as exc:
         print(f"[scraper] OAuth mode unavailable ({exc}). Falling back to public JSON mode.")
-        return _scrape_posts_public_json(
-            subreddit_name=subreddit_name,
-            fetch_limit=fetch_limit,
-            min_upvotes=min_upvotes,
-            min_body_chars=min_body_chars,
-            max_body_chars=max_body_chars,
-            flair_whitelist=flair_whitelist,
-            skip_done=skip_done,
-            sort=sort,
-            top_time=top_time,
-        )
+        try:
+            posts = _scrape_posts_public_json(
+                subreddit_name=subreddit_name,
+                fetch_limit=fetch_limit,
+                min_upvotes=min_upvotes,
+                min_body_chars=min_body_chars,
+                max_body_chars=max_body_chars,
+                flair_whitelist=flair_whitelist,
+                skip_done=skip_done,
+                sort=sort,
+                top_time=top_time,
+            )
+            _save_scrape_cache(query, posts, source="public-json")
+            return posts
+        except Exception:
+            if cached_posts is not None:
+                print(f"[scraper] Falling back to cached results for r/{subreddit_name}")
+                return cached_posts
+            raise
