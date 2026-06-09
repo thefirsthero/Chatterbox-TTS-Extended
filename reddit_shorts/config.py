@@ -24,7 +24,7 @@ SUBREDDIT = "AmItheAsshole"
 POST_LIMIT_FETCH = 75          # How many hot/top posts to pull before filtering
 MIN_UPVOTES = 2_000            # Minimum score
 MIN_BODY_CHARS = 450           # Too short = boring short
-MAX_BODY_CHARS = 2_800         # ~70–150 s of ASMR narration at ~110 WPM
+MAX_BODY_CHARS = 1_500         # Enforced max 180s video; tighter than old ~70–150s estimate
 
 # Only process posts with one of these resolved flairs (None = no filter)
 FLAIR_WHITELIST = [
@@ -37,6 +37,9 @@ FLAIR_WHITELIST = [
 # How many top comments to pull (read aloud at the end)
 TOP_COMMENTS_COUNT = 3
 MAX_COMMENT_CHARS = 220        # Trim comments longer than this
+
+# Maximum video length constraint (TikTok/Shorts practical limit)
+MAX_VIDEO_DURATION_S = 180     # 3 minutes hard limit
 
 # ── Platform safety filters ───────────────────────────────────────────────
 # Posts containing these terms are skipped before TTS/video generation.

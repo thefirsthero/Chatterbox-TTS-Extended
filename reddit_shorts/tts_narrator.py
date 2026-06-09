@@ -35,6 +35,49 @@ def _detect_device() -> str:
     return "cpu"
 
 
+def estimate_narration_duration(text: str) -> float:
+    """
+    Estimate the duration (in seconds) of ASMR narration for the given text.
+    
+    Uses a conservative word-per-minute rate to account for ASMR pacing,
+    pauses between chunks, and punctuation-based silence gaps.
+    
+    Parameters
+    ----------
+    text : str
+        The full narration text (typically a NarrationScript.full_text)
+    
+    Returns
+    -------
+    float
+        Estimated duration in seconds
+    """
+    if not text or not text.strip():
+        return 0.0
+    
+    # ASMR narration speaking rate (words per minute)
+    # Estimated from ChatterboxTTS + config pause settings (45-140ms between chunks)
+    # This is conservative to avoid exceeding the target on actual audio
+    WORDS_PER_MINUTE = 105
+    
+    # Count words (simple: split on whitespace)
+    word_count = len(text.split())
+    
+    # Base narration duration
+    duration_s = (word_count / WORDS_PER_MINUTE) * 60
+    
+    # Account for chunk breaks and pauses:
+    # - Average ~50ms pause per chunk
+    # - For ~175 char chunks at ~5 chars/word, that's ~35 words per chunk
+    # - So roughly 1 pause per 35 words
+    estimated_chunks = max(1, word_count // 35)
+    avg_pause_ms = 100  # Conservative average of pause min/max
+    pause_overhead_s = (estimated_chunks * avg_pause_ms) / 1000.0
+    
+    total_duration = duration_s + pause_overhead_s
+    return total_duration
+
+
 def _chunk_cache_dir(output_wav: Path) -> Path:
     return output_wav.parent / "_tts_chunks" / output_wav.stem
 

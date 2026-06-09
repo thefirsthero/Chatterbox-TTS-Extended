@@ -142,11 +142,27 @@ def process_post(
     script_path.write_text(script.full_text, encoding="utf-8")
     print(f"[pipeline] Script: {len(script.full_text)} chars")
 
+    # ── Step 1b: Validate estimated duration ────────────────────────────────
+    from reddit_shorts.tts_narrator import (
+        generate_narration, 
+        get_audio_duration, 
+        estimate_narration_duration
+    )
+    
+    estimated_duration = estimate_narration_duration(script.full_text)
+    print(f"[pipeline] Estimated duration: {estimated_duration:.1f}s")
+    
+    if estimated_duration > cfg.MAX_VIDEO_DURATION_S:
+        print(
+            f"[pipeline] SKIPPING {post.post_id} — estimated duration {estimated_duration:.0f}s "
+            f"exceeds maximum {cfg.MAX_VIDEO_DURATION_S}s"
+        )
+        return None
+
     # ── Step 2: Generate ASMR audio ─────────────────────────────────────────
     print("[pipeline] Step 2/6 — Generating narration audio…")
     # Lazy import keeps CLI dry-runs fast and avoids heavyweight model imports
     # unless we actually render audio/video.
-    from reddit_shorts.tts_narrator import generate_narration, get_audio_duration
 
     audio_wav = out_dir / "audio.wav"
     generate_narration(
@@ -157,11 +173,17 @@ def process_post(
     audio_duration = get_audio_duration(audio_wav)
     print(f"[pipeline] Audio duration: {audio_duration:.1f}s")
 
-    # Guard: Shorts / TikTok sweet spot is 60–180 s
+    # Guard: Hard limit on video duration
+    if audio_duration > cfg.MAX_VIDEO_DURATION_S:
+        print(
+            f"[pipeline] SKIPPING {post.post_id} — actual duration {audio_duration:.0f}s "
+            f"exceeds maximum {cfg.MAX_VIDEO_DURATION_S}s"
+        )
+        return None
+
+    # Warn if very short
     if audio_duration < 40:
         print(f"[pipeline] WARNING: Audio is very short ({audio_duration:.0f}s). Post may be too brief.")
-    if audio_duration > 240:
-        print(f"[pipeline] WARNING: Audio is long ({audio_duration:.0f}s). Consider a shorter post body.")
 
     # ── Step 3: Render Reddit post card ─────────────────────────────────────
     print("[pipeline] Step 3/6 — Rendering Reddit card…")
