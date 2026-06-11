@@ -28,6 +28,9 @@ Usage examples:
     # Process many posts from a text file (one URL/ID per line)
     python run_shorts_pipeline.py --post-list-file scripts/post_urls.txt
 
+    # Prefetch posts into local JSON cache for offline --local-posts runs
+    python run_shorts_pipeline.py --prefetch-local-posts --prefetch-count 20
+
   # Download gameplay footage and exit
   python run_shorts_pipeline.py --download-gameplay-only
 """
@@ -64,6 +67,12 @@ def _setup_args() -> argparse.Namespace:
                    help="Process a single Reddit post by URL (skips scraping)")
     p.add_argument("--post-list-file", default=None, dest="post_list_file",
                    help="Path to text file with Reddit post URLs/IDs (one per line)")
+    p.add_argument("--local-posts", action="store_true",
+                   help="Use locally stored posts (bypass Reddit API entirely)")
+    p.add_argument("--prefetch-local-posts", action="store_true",
+                   help="Fetch and cache Reddit posts as JSON for offline local post mode")
+    p.add_argument("--prefetch-count", type=int, default=20, metavar="N",
+                   help="Number of posts to prefetch into local cache when --prefetch-local-posts is used")
     p.add_argument("--no-dedupe-list", action="store_true",
                    help="Disable de-duplication when using --post-list-file")
     p.add_argument("--no-skip-done", action="store_true",
@@ -112,6 +121,19 @@ def main() -> int:
             print("No clips downloaded. Check yt-dlp installation.")
         return 0
 
+    # ── Prefetch posts for offline local mode ────────────────────────────
+    if args.prefetch_local_posts:
+        from reddit_shorts.scraper import prefetch_posts_to_local_cache
+
+        count = prefetch_posts_to_local_cache(
+            count=args.prefetch_count,
+            subreddit_name=subreddit or cfg.SUBREDDIT,
+            sort=args.sort,
+            top_time=args.top_time,
+            skip_done=not args.no_skip_done,
+        )
+        return 0 if count > 0 else 1
+
     # ── Manual single post mode (ID or URL) ───────────────────────────────
     if args.post_id or args.post_url:
         from reddit_shorts.scraper import fetch_post_public, is_post_done
@@ -150,6 +172,55 @@ def main() -> int:
             gameplay_clips=gameplay_clips,
             safety_filter=safety_enabled,
             blocked_terms=blocked_terms,
+        )
+        return 0 if result else 1
+
+    # ── Local posts mode (JSON files, no Reddit API) ───────────────────────
+    if args.local_posts:
+        from reddit_shorts.local_posts import load_local_posts
+
+        posts = load_local_posts(limit=args.max)
+        if not posts:
+            print("[cli] No local posts found. See output/cache/local_posts/")
+            return 1
+
+        print(f"[cli] Loaded {len(posts)} post(s) from local storage")
+
+        if safety_enabled:
+            safe_posts = []
+            skipped = 0
+            for post in posts:
+                decision = evaluate_post(post, blocked_terms)
+                if decision.blocked:
+                    skipped += 1
+                    print(
+                        f"[cli] Skipping {post.post_id} due to safety filter: "
+                        + ", ".join(decision.matched_terms)
+                    )
+                    continue
+                safe_posts.append(post)
+            posts = safe_posts
+            if skipped:
+                print(f"[cli] Safety filter skipped {skipped} post(s)")
+
+        if not posts:
+            print("[cli] No safe posts remain after filtering.")
+            return 1
+
+        gameplay_clips = None
+        if not args.dry_run:
+            from reddit_shorts.gameplay import ensure_gameplay_footage
+            gameplay_clips = ensure_gameplay_footage(
+                auto_download=not args.no_gameplay_download
+            )
+
+        from reddit_shorts.pipeline import run_batch
+        result = run_batch(
+            posts[: args.max],
+            gameplay_clips=gameplay_clips,
+            safety_filter=safety_enabled,
+            blocked_terms=blocked_terms,
+            dry_run=args.dry_run,
         )
         return 0 if result else 1
 

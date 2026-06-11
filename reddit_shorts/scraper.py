@@ -11,10 +11,12 @@ them in your shell before running the pipeline.
 """
 
 import hashlib
+import html
 import json
 import os
 import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -219,6 +221,237 @@ def _fetch_top_comments_public(subreddit_name: str, post_id: str, limit: int = 2
         return []
 
 
+def _strip_html_tags(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text or "")
+    return html.unescape(text).strip()
+
+
+def _clean_rss_body(text: str) -> str:
+    text = _strip_html_tags(text)
+    # Remove Reddit metadata appended to the post preview
+    text = re.sub(
+        r"\s*submitted by\s+/u/[^\s]+\s+to\s+r/[^\s]+.*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(r"\s*\[link\].*$", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"\s*\[comments\].*$", "", text, flags=re.IGNORECASE | re.DOTALL)
+    return text.strip()
+
+
+def _xml_find_text(element: ET.Element, *names: str) -> str:
+    for child in element.iter():
+        tag = child.tag
+        if not isinstance(tag, str):
+            continue
+        if any(tag.endswith(name) for name in names):
+            if child.text and child.text.strip():
+                return child.text.strip()
+    return ""
+
+
+def _xml_find_link(element: ET.Element) -> str:
+    for child in element.iter():
+        tag = child.tag
+        if not isinstance(tag, str):
+            continue
+        if tag.endswith("link"):
+            href = child.get("href") or (child.text.strip() if child.text else "")
+            if not href:
+                continue
+            rel = (child.get("rel") or "").lower()
+            if rel and rel != "self":
+                return href.strip()
+            if not rel:
+                return href.strip()
+    return ""
+
+
+def _fetch_post_public_rss(post_id: str, subreddit: str | None = None) -> RedditPost:
+    generic_rss_url = f"https://www.reddit.com/comments/{post_id}/.rss"
+    rss_url = generic_rss_url
+    if subreddit:
+        rss_url = f"https://www.reddit.com/r/{subreddit}/comments/{post_id}/.rss"
+
+    resp = requests.get(
+        rss_url,
+        headers={"User-Agent": os.environ.get("REDDIT_USER_AGENT", "RedditShorts:v1.0 (rss-fallback)")},
+        timeout=25,
+    )
+    if resp.status_code == 404 and rss_url != generic_rss_url:
+        resp = requests.get(
+            generic_rss_url,
+            headers={"User-Agent": os.environ.get("REDDIT_USER_AGENT", "RedditShorts:v1.0 (rss-fallback)")},
+            timeout=25,
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Public RSS post fetch failed ({resp.status_code}) for {post_id}")
+
+    root = ET.fromstring(resp.text)
+    item = next((el for el in root.iter() if isinstance(el.tag, str) and el.tag.endswith("item")), None)
+    if item is None:
+        item = next((el for el in root.iter() if isinstance(el.tag, str) and el.tag.endswith("entry")), None)
+    if item is None:
+        raise RuntimeError(f"No RSS item returned for {post_id}")
+
+    title = _xml_find_text(item, "title")
+    link = _xml_find_link(item)
+    body = _clean_rss_body(_xml_find_text(item, "description", "content", "summary"))
+    author = _xml_find_text(item, "name", "author", "creator") or "[deleted]"
+    subreddit_name = subreddit or "unknown"
+    if not link and title:
+        link = f"https://www.reddit.com/comments/{post_id}/"
+    if subreddit_name == "unknown" and link:
+        try:
+            _, extracted_sub = _extract_post_id_and_subreddit(link)
+            if extracted_sub:
+                subreddit_name = extracted_sub
+        except Exception:
+            pass
+
+    return RedditPost(
+        post_id=post_id,
+        title=title,
+        body=_clean_body(body),
+        author=author,
+        upvotes=0,
+        num_comments=0,
+        flair=None,
+        url=link or f"https://reddit.com/comments/{post_id}/",
+        subreddit=subreddit_name,
+        top_comments=[],
+    )
+
+
+def _scrape_posts_public_rss(
+    subreddit_name: str,
+    fetch_limit: int,
+    min_upvotes: int,
+    min_body_chars: int,
+    max_body_chars: int,
+    flair_whitelist: Optional[list[str]],
+    skip_done: bool,
+    sort: str,
+    top_time: str,
+) -> list[RedditPost]:
+    done = _load_done_posts() if skip_done else set()
+
+    if sort == "hot":
+        list_url = f"https://www.reddit.com/r/{subreddit_name}/hot.rss"
+    elif sort == "new":
+        list_url = f"https://www.reddit.com/r/{subreddit_name}/new.rss"
+    else:
+        list_url = f"https://www.reddit.com/r/{subreddit_name}/top.rss"
+
+    params = {"limit": str(fetch_limit)}
+    if sort == "top":
+        params["t"] = top_time
+
+    resp = requests.get(list_url, headers={"User-Agent": os.environ.get("REDDIT_USER_AGENT", "RedditShorts:v1.0 (rss-fallback)")}, params=params, timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Public Reddit RSS request failed ({resp.status_code}). "
+            "Try again later or switch subreddit/sort."
+        )
+
+    root = ET.fromstring(resp.text)
+    items = [el for el in root.iter() if isinstance(el.tag, str) and (el.tag.endswith("item") or el.tag.endswith("entry"))]
+    posts: list[RedditPost] = []
+
+    if min_upvotes > 0:
+        print("[scraper] RSS mode cannot enforce min_upvotes; ignoring score filter.")
+
+    for item in items:
+        title = _xml_find_text(item, "title")
+        link = _xml_find_link(item)
+        body = _clean_rss_body(_xml_find_text(item, "description", "content", "summary"))
+        author = _xml_find_text(item, "name", "author", "creator") or "[deleted]"
+
+        try:
+            post_id, _ = _extract_post_id_and_subreddit(link)
+        except Exception:
+            continue
+        if not post_id or post_id in done:
+            continue
+
+        if len(body) < min_body_chars or (max_body_chars is not None and len(body) > max_body_chars):
+            continue
+
+        flair = None
+        score = 0
+
+        posts.append(
+            RedditPost(
+                post_id=post_id,
+                title=title,
+                body=_clean_body(body),
+                author=author,
+                upvotes=score,
+                num_comments=0,
+                flair=flair,
+                url=link or f"https://reddit.com/r/{subreddit_name}/comments/{post_id}/",
+                subreddit=subreddit_name,
+                top_comments=[],
+            )
+        )
+
+    posts.sort(key=lambda p: p.upvotes, reverse=True)
+    print(
+        f"[scraper] Public RSS mode: fetched {fetch_limit} posts -> "
+        f"{len(posts)} passed filters from r/{subreddit_name}"
+    )
+    return posts
+
+
+def save_posts_to_local_cache(
+    posts: list[RedditPost],
+    output_dir: Path | None = None,
+) -> list[Path]:
+    """Save RedditPost objects as JSON files for offline local post mode."""
+    output_dir = Path(output_dir) if output_dir is not None else cfg.OUTPUT_DIR.parent / "cache" / "local_posts"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_files: list[Path] = []
+    for post in posts:
+        out_path = output_dir / f"{post.post_id}.json"
+        out_path.write_text(
+            json.dumps(_serialize_post(post), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        saved_files.append(out_path)
+    return saved_files
+
+
+def prefetch_posts_to_local_cache(
+    count: int = 20,
+    subreddit_name: str = cfg.SUBREDDIT,
+    sort: str = "hot",
+    top_time: str = "week",
+    skip_done: bool = True,
+) -> int:
+    """Fetch a batch of posts and save them to local JSON storage."""
+    print(
+        f"[scraper] Prefetching up to {count} posts from r/{subreddit_name} "
+        f"(sort={sort}, top_time={top_time}, skip_done={skip_done})"
+    )
+    posts = scrape_posts(
+        subreddit_name=subreddit_name,
+        fetch_limit=max(count * 3, 50),
+        desired_count=count,
+        skip_done=skip_done,
+        sort=sort,
+        top_time=top_time,
+    )
+    if not posts:
+        print(f"[scraper] No posts found to prefetch for r/{subreddit_name}.")
+        return 0
+
+    saved_files = save_posts_to_local_cache(posts[:count])
+    print(f"[scraper] Saved {len(saved_files)} posts to {cfg.OUTPUT_DIR.parent / 'cache' / 'local_posts'}")
+    return len(saved_files)
+
+
 def _extract_post_id_and_subreddit(post_url: str) -> tuple[str, str]:
     """Extract (post_id, subreddit) from a Reddit post URL."""
     parsed = urlparse(post_url)
@@ -274,13 +507,16 @@ def fetch_post_public(post_id_or_url: str, subreddit_hint: str | None = None) ->
     # Post JSON endpoint works with ID-only URLs.
     url = f"https://www.reddit.com/comments/{post_id}.json"
     params = {"raw_json": "1", "sort": "top", "limit": "50"}
-    resp = requests.get(url, headers=_build_headers(), params=params, timeout=25)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Public post fetch failed ({resp.status_code}) for {post_id}")
+    try:
+        resp = requests.get(url, headers=_build_headers(), params=params, timeout=25)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Public post fetch failed ({resp.status_code}) for {post_id}")
 
-    payload = resp.json()
-    if not isinstance(payload, list) or len(payload) < 1:
-        raise RuntimeError(f"Unexpected Reddit response for {post_id}")
+        payload = resp.json()
+        if not isinstance(payload, list) or len(payload) < 1:
+            raise RuntimeError(f"Unexpected Reddit response for {post_id}")
+    except Exception:
+        return _fetch_post_public_rss(post_id, subreddit=subreddit)
 
     listing = payload[0]
     children = listing.get("data", {}).get("children", [])
@@ -327,6 +563,54 @@ def fetch_post_public(post_id_or_url: str, subreddit_hint: str | None = None) ->
         subreddit=subreddit,
         top_comments=top_comments,
     )
+
+
+def save_posts_to_local_cache(
+    posts: list[RedditPost],
+    output_dir: Path | None = None,
+) -> list[Path]:
+    """Save RedditPost objects as JSON files for offline local post mode."""
+    output_dir = Path(output_dir) if output_dir is not None else cfg.OUTPUT_DIR.parent / "cache" / "local_posts"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_files: list[Path] = []
+    for post in posts:
+        out_path = output_dir / f"{post.post_id}.json"
+        out_path.write_text(
+            json.dumps(_serialize_post(post), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        saved_files.append(out_path)
+    return saved_files
+
+
+def prefetch_posts_to_local_cache(
+    count: int = 20,
+    subreddit_name: str = cfg.SUBREDDIT,
+    sort: str = "hot",
+    top_time: str = "week",
+    skip_done: bool = True,
+) -> int:
+    """Fetch a batch of posts and save them to local JSON storage."""
+    print(
+        f"[scraper] Prefetching up to {count} posts from r/{subreddit_name} "
+        f"(sort={sort}, top_time={top_time}, skip_done={skip_done})"
+    )
+    posts = scrape_posts(
+        subreddit_name=subreddit_name,
+        fetch_limit=max(count * 3, 50),
+        desired_count=count,
+        skip_done=skip_done,
+        sort=sort,
+        top_time=top_time,
+    )
+    if not posts:
+        print(f"[scraper] No posts found to prefetch for r/{subreddit_name}.")
+        return 0
+
+    saved_files = save_posts_to_local_cache(posts[:count])
+    print(f"[scraper] Saved {len(saved_files)} posts to {cfg.OUTPUT_DIR.parent / 'cache' / 'local_posts'}")
+    return len(saved_files)
 
 
 def fetch_posts_from_list(
@@ -490,7 +774,7 @@ def _scrape_posts_public_json(
 
     posts.sort(key=lambda p: p.upvotes, reverse=True)
     print(
-        f"[scraper] Public JSON mode: fetched {fetch_limit} posts → "
+        f"[scraper] Public JSON mode: fetched {fetch_limit} posts -> "
         f"{len(posts)} passed filters from r/{subreddit_name}"
     )
     return posts
@@ -622,7 +906,7 @@ def scrape_posts(
 
         posts.sort(key=lambda p: p.upvotes, reverse=True)
         _save_scrape_cache(query, posts, source="oauth")
-        print(f"[scraper] OAuth mode: fetched {fetch_limit} posts → {len(posts)} passed filters from r/{subreddit_name}")
+        print(f"[scraper] OAuth mode: fetched {fetch_limit} posts -> {len(posts)} passed filters from r/{subreddit_name}")
         return posts
 
     except Exception as exc:
@@ -641,8 +925,126 @@ def scrape_posts(
             )
             _save_scrape_cache(query, posts, source="public-json")
             return posts
-        except Exception:
-            if cached_posts is not None:
-                print(f"[scraper] Falling back to cached results for r/{subreddit_name}")
-                return cached_posts
-            raise
+        except Exception as json_exc:
+            print(f"[scraper] Public JSON failed ({json_exc}). Falling back to RSS mode.")
+            try:
+                posts = _scrape_posts_public_rss(
+                    subreddit_name=subreddit_name,
+                    fetch_limit=fetch_limit,
+                    min_upvotes=min_upvotes,
+                    min_body_chars=min_body_chars,
+                    max_body_chars=max_body_chars,
+                    flair_whitelist=flair_whitelist,
+                    skip_done=skip_done,
+                    sort=sort,
+                    top_time=top_time,
+                )
+                _save_scrape_cache(query, posts, source="public-rss")
+                return posts
+            except Exception:
+                if cached_posts is not None:
+                    print(f"[scraper] Falling back to cached results for r/{subreddit_name}")
+                    return cached_posts
+                raise
+
+
+def generate_post_urls_to_file(
+    output_file: str | Path,
+    subreddit_name: str = cfg.SUBREDDIT,
+    count: int = 20,
+    sort: str = "hot",
+    top_time: str = "week",
+    skip_done: bool = True,
+) -> int:
+    """
+    Fetch posts from a subreddit and write their URLs to a file (one per line).
+
+    This automates sourcing for --post-list-file mode. Useful for repeated bulk runs
+    without manual curation.
+
+    Returns: number of URLs written to file.
+    """
+    output_path = Path(output_file)
+    try:
+        print(f"[scraper] Fetching {count} posts from r/{subreddit_name} (sort={sort})...")
+        posts = scrape_posts(
+            subreddit_name=subreddit_name,
+            fetch_limit=count * 2,  # Fetch extra to account for filtering
+            desired_count=count,
+            skip_done=skip_done,
+            sort=sort,
+            top_time=top_time,
+        )
+
+        if not posts:
+            print(f"[scraper] No posts found for r/{subreddit_name}. Output file not updated.")
+            return 0
+
+        # Write URLs (one per line)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as f:
+            for post in posts[:count]:
+                f.write(post.url + "\n")
+
+        print(f"[scraper] Wrote {len(posts[:count])} post URLs to {output_path}")
+        return len(posts[:count])
+
+    except Exception as exc:
+        print(f"[scraper] Error generating post list: {exc}")
+        raise
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Automate Reddit post fetching for local post list mode.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="scripts/post_urls_generated.txt",
+        help="Output file for post URLs (default: scripts/post_urls_generated.txt)",
+    )
+    parser.add_argument(
+        "--subreddit",
+        type=str,
+        default=cfg.SUBREDDIT,
+        help=f"Subreddit to scrape (default: {cfg.SUBREDDIT})",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=20,
+        help="Number of posts to fetch (default: 20)",
+    )
+    parser.add_argument(
+        "--sort",
+        type=str,
+        choices=["hot", "top", "new"],
+        default="hot",
+        help="Sort order (default: hot)",
+    )
+    parser.add_argument(
+        "--top-time",
+        type=str,
+        default="week",
+        help="Time filter for --sort=top (default: week)",
+    )
+    parser.add_argument(
+        "--skip-done",
+        action="store_true",
+        default=True,
+        help="Skip posts already in done_posts.txt (default: true)",
+    )
+
+    args = parser.parse_args()
+    count = generate_post_urls_to_file(
+        output_file=args.output,
+        subreddit_name=args.subreddit,
+        count=args.count,
+        sort=args.sort,
+        top_time=args.top_time,
+        skip_done=args.skip_done,
+    )
+    exit(0 if count > 0 else 1)

@@ -3,7 +3,9 @@
 ## Files Modified
 
 ### 1. `reddit_shorts/config.py`
+
 **Changes:**
+
 - `VIDEO_PRESET`: `"medium"` → `"faster"` (FFmpeg H.264 encoding preset)
 - `VIDEO_CRF`: `24` → `22` (H.264 quality; imperceptible improvement, ensures fast encode)
 - `GAMEPLAY_INTERMEDIATE_PRESET`: `"veryfast"` → `"ultrafast"` (lossless intermediate)
@@ -16,7 +18,9 @@
 ---
 
 ### 2. `reddit_shorts/pipeline.py`
+
 **Changes:**
+
 - **Added import:** `from concurrent.futures import ProcessPoolExecutor, as_completed`
 - **New function:** `_process_post_worker(args_tuple)` - worker subprocess wrapper
 - **Modified:** `run_batch()` function:
@@ -32,6 +36,7 @@
   - Uses `as_completed()` for streaming result processing
 
 **Example output:**
+
 ```
 [pipeline] Processing 6 post(s) with 3 parallel worker(s)
 [pipeline] [1/6] ✓ post_id_1
@@ -42,18 +47,22 @@
 ---
 
 ### 3. `reddit_shorts/tts_narrator.py`
+
 **No changes to encoding.** (TTS generation already optimal for CPU)
 
 ---
 
 ### 4. `reddit_shorts/parallel.py` (NEW FILE)
+
 **Purpose:** Reusable parallel batch processing utilities
 
 **Functions:**
+
 - `get_optimal_worker_count()` - Auto-detect workers for the current hardware
 - `process_batch_parallel(posts, process_fn, max_workers)` - Generic parallel processor
 
 **Usage:**
+
 ```python
 from reddit_shorts.parallel import process_batch_parallel
 from reddit_shorts.pipeline import process_post
@@ -66,22 +75,25 @@ results = process_batch_parallel(posts, process_post, max_workers=3)
 ## New Documentation Files
 
 ### 1. `OPTIMIZATION_QUICK_START.md`
+
 **For users:** Quick reference guide with before/after timings, troubleshooting, and simple tuning options.
 
 ### 2. `PERFORMANCE_GUIDE.md`
+
 **For developers:** Deep-dive on FFmpeg settings, hardware acceleration possibilities, monitoring, and optimization hierarchy.
 
 ---
 
 ## Performance Improvements Summary
 
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| Single 3-min video | 5:45 | 3:15 | 43% faster |
-| 3-video batch | 17:15 | 5:00 | 71% faster |
-| 6-video batch | 34:30 | 10:00 | 71% faster |
+| Metric             | Before | After | Improvement |
+| ------------------ | ------ | ----- | ----------- |
+| Single 3-min video | 5:45   | 3:15  | 43% faster  |
+| 3-video batch      | 17:15  | 5:00  | 71% faster  |
+| 6-video batch      | 34:30  | 10:00 | 71% faster  |
 
 **Breakdown of improvements:**
+
 - FFmpeg preset optimization: 30-40% per video
 - Parallel processing: Additional 45-50% for batches (reduces per-video overhead)
 - Clip caching: 15-20% for subsequent batches (not counted in first-batch numbers)
@@ -91,6 +103,7 @@ results = process_batch_parallel(posts, process_post, max_workers=3)
 ## Implementation Details
 
 ### FFmpeg Encoding Optimization
+
 ```bash
 # Old (medium preset, CRF 24)
 ffmpeg ... -preset medium -crf 24 ...  # ~120 sec for 3-min video
@@ -102,6 +115,7 @@ ffmpeg ... -preset faster -crf 22 ...  # ~70 sec for 3-min video
 **Why:** H.264 "faster" preset uses more threads in x264 encoder, scales well on 12+ cores without perceptible quality loss.
 
 ### Parallel Processing Architecture
+
 ```
 run_batch() [main process]
 ├─ Scrape & filter posts
@@ -120,6 +134,7 @@ run_batch() [main process]
 ```
 
 **Why ProcessPoolExecutor?**
+
 - Avoids GIL (Global Interpreter Lock) - each worker is true OS process
 - Automatic resource cleanup
 - Built-in error handling
@@ -144,6 +159,7 @@ run_batch() [main process]
 ## Configuration Tuning Reference
 
 ### For maximum speed (if you have 32GB+ RAM):
+
 ```python
 MAX_PARALLEL_POSTS = 4           # Use all workers aggressively
 VIDEO_PRESET = "faster"           # Already default
@@ -151,6 +167,7 @@ GAMEPLAY_ENABLE_CACHE = True       # Already default
 ```
 
 ### For conservative/stable (16GB RAM):
+
 ```python
 MAX_PARALLEL_POSTS = 2             # Use 2 workers
 VIDEO_PRESET = "fast"              # One step slower, more stable
@@ -158,6 +175,7 @@ GAMEPLAY_ENABLE_CACHE = True        # Reuse clips
 ```
 
 ### For ultra-quality (if speed not critical):
+
 ```python
 VIDEO_PRESET = "medium"            # Higher quality (but slower)
 VIDEO_CRF = 21                     # Slightly better quality
@@ -171,14 +189,17 @@ MAX_PARALLEL_POSTS = 1             # Single worker (no parallelization overhead)
 **To verify the optimizations are active:**
 
 1. **Check FFmpeg preset:**
+
    ```bash
    python -c "from reddit_shorts import config as cfg; print(f'Preset: {cfg.VIDEO_PRESET}, CRF: {cfg.VIDEO_CRF}')"
    ```
 
 2. **Monitor parallel processing:**
+
    ```bash
    python run_shorts_pipeline.py --max 6 2>&1 | grep "\[parallel\]"
    ```
+
    Should see: `[pipeline] Processing 6 post(s) with 3 parallel worker(s)`
 
 3. **Time a batch:**
@@ -222,4 +243,3 @@ GAMEPLAY_ENABLE_CACHE = False     # Disable caching
 ```
 
 Also comment out or remove parallel processing from `run_batch()` in `reddit_shorts/pipeline.py` if needed.
-

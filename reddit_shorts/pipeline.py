@@ -426,5 +426,5 @@ def run_batch(
         f"{len(errors)} error(s), {skipped_safety} safety-skip(s)"
     )
     for p in produced:
-        print(f"  → {p}")
+        print(f"  -> {p}")
     return produced
