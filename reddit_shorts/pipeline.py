@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -26,7 +27,7 @@ except ImportError:
 from reddit_shorts import config as cfg
 from reddit_shorts.gameplay import ensure_gameplay_footage
 from reddit_shorts.post_renderer import render_hook_overlay, render_post_card
-from reddit_shorts.scraper import RedditPost, mark_post_done, scrape_posts
+from reddit_shorts.scraper import RedditPost, is_post_done, mark_post_done, scrape_posts
 from reddit_shorts.safety import evaluate_post
 from reddit_shorts.script_writer import generate_script
 from reddit_shorts.subtitle_gen import SubtitleSpec, generate_ass
@@ -35,6 +36,27 @@ from reddit_shorts.transcription import transcribe_word_timestamps
 
 def _post_output_dir(post_id: str) -> Path:
     return cfg.OUTPUT_DIR / post_id
+
+
+def _process_post_worker(args_tuple: tuple) -> Optional[Path]:
+    """
+    Worker function for ProcessPoolExecutor parallel processing.
+    
+    Takes a tuple of (post, gameplay_clips_list, blocked_terms) and processes
+    the post independently in a subprocess.
+    """
+    post, gameplay_clips_list, blocked_terms = args_tuple
+    try:
+        return process_post(
+            post,
+            gameplay_clips=gameplay_clips_list,
+            safety_filter=False,
+            blocked_terms=blocked_terms,
+        )
+    except Exception as exc:
+        print(f"[parallel] Error processing {post.post_id}: {exc}")
+        traceback.print_exc()
+        return None
 
 
 def _append_safety_skip_log(post: RedditPost, matched_terms: list[str]) -> None:
@@ -86,9 +108,20 @@ def process_post(
     Run the full pipeline for a single post.
 
     Returns the path to the final MP4, or None if skipped/failed.
+    
+    Can be called from process_batch_parallel() for multi-core processing.
     """
     out_dir = _post_output_dir(post.post_id)
     final_video = out_dir / "video.mp4"
+
+    if is_post_done(post.post_id):
+        if final_video.exists():
+            published_video = _publish_final_video(post.post_id, final_video)
+            print(f"[pipeline] Skipping {post.post_id} — already processed")
+            print(f"[pipeline] Published: {published_video}")
+            return published_video
+        print(f"[pipeline] Skipping {post.post_id} — already processed (done list)")
+        return None
 
     if skip_if_exists and final_video.exists():
         published_video = _publish_final_video(post.post_id, final_video)
@@ -297,6 +330,8 @@ def run_batch(
     errors: list[str] = []
     skipped_safety = 0
 
+    # Pre-filter posts for safety before parallel processing
+    posts_to_process = []
     for post in posts[:max_videos]:
         if safety_filter:
             decision = evaluate_post(post, terms)
@@ -308,28 +343,83 @@ def run_batch(
                 )
                 _append_safety_skip_log(post, decision.matched_terms)
                 continue
+        posts_to_process.append(post)
 
-        if dry_run:
+    if dry_run:
+        for post in posts_to_process:
             print(f"[DRY RUN] Would process: [{post.flair}] {post.title[:80]} ({post.upvotes:,} ▲)")
-            continue
-        try:
-            video_path = process_post(
-                post,
-                gameplay_clips=gameplay_clips,
-                safety_filter=False,
-                blocked_terms=terms,
-            )
-            if video_path:
-                produced.append(video_path)
-        except Exception as exc:
-            msg = f"Post {post.post_id} failed: {exc}"
-            print(f"[pipeline] ERROR: {msg}")
-            traceback.print_exc()
-            errors.append(msg)
-            # Write error log so we can review
-            err_path = _post_output_dir(post.post_id) / "error.log"
-            err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(traceback.format_exc(), encoding="utf-8")
+        print(
+            f"\n[pipeline] Dry run complete: {len(posts_to_process)} video(s) would be produced"
+        )
+        return []
+
+    # Decide whether to use parallel processing
+    use_parallel = len(posts_to_process) > 2
+    
+    if use_parallel:
+        # Parallel processing for multiple posts
+        from multiprocessing import cpu_count
+        max_workers = cfg.MAX_PARALLEL_POSTS
+        if max_workers is None:
+            max_workers = max(1, cpu_count() // 3)
+        max_workers = min(max_workers, len(posts_to_process))
+        
+        print(f"[pipeline] Processing {len(posts_to_process)} post(s) with {max_workers} parallel worker(s)")
+        
+        # Prepare work items
+        work_items = [
+            (post, gameplay_clips, terms)
+            for post in posts_to_process
+        ]
+        
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_process_post_worker, item): item[0]
+                for item in work_items
+            }
+            
+            completed = 0
+            for future in as_completed(futures):
+                post = futures[future]
+                try:
+                    video_path = future.result()
+                    completed += 1
+                    if video_path:
+                        produced.append(video_path)
+                        print(f"[pipeline] [{completed}/{len(posts_to_process)}] ✓ {post.post_id}")
+                    else:
+                        print(f"[pipeline] [{completed}/{len(posts_to_process)}] ⊘ {post.post_id} (skipped)")
+                except Exception as exc:
+                    completed += 1
+                    msg = f"Post {post.post_id} failed: {exc}"
+                    print(f"[pipeline] [{completed}/{len(posts_to_process)}] ✗ {post.post_id}")
+                    print(f"[pipeline]   Error: {exc}")
+                    errors.append(msg)
+                    err_path = _post_output_dir(post.post_id) / "error.log"
+                    err_path.parent.mkdir(parents=True, exist_ok=True)
+                    err_path.write_text(traceback.format_exc(), encoding="utf-8")
+    else:
+        # Serial processing for small batches (≤2 posts)
+        print(f"[pipeline] Processing {len(posts_to_process)} post(s) serially")
+        
+        for idx, post in enumerate(posts_to_process, 1):
+            try:
+                video_path = process_post(
+                    post,
+                    gameplay_clips=gameplay_clips,
+                    safety_filter=False,
+                    blocked_terms=terms,
+                )
+                if video_path:
+                    produced.append(video_path)
+            except Exception as exc:
+                msg = f"Post {post.post_id} failed: {exc}"
+                print(f"[pipeline] ERROR: {msg}")
+                traceback.print_exc()
+                errors.append(msg)
+                err_path = _post_output_dir(post.post_id) / "error.log"
+                err_path.parent.mkdir(parents=True, exist_ok=True)
+                err_path.write_text(traceback.format_exc(), encoding="utf-8")
 
     print(
         f"\n[pipeline] Batch complete: {len(produced)} video(s) produced, "

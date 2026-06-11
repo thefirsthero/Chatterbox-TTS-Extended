@@ -95,11 +95,11 @@ TTS_NORMALIZE_LRA = 9.0
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
 VIDEO_FPS = 30
-VIDEO_CRF = 24                 # H.264 quality (lower = better, larger file)
-VIDEO_PRESET = "medium"
+VIDEO_CRF = 22                 # H.264 quality; 22 = visually lossless; 12c/24t CPU encodes fast enough
+VIDEO_PRESET = "faster"        # Faster than "medium"; multi-core CPU handles this well without quality loss
 VIDEO_AUDIO_BITRATE = "128k"
 GAMEPLAY_INTERMEDIATE_CRF = 30
-GAMEPLAY_INTERMEDIATE_PRESET = "veryfast"
+GAMEPLAY_INTERMEDIATE_PRESET = "ultrafast"  # Lossless intermediate; actual encoding is in final composition
 
 # Gameplay background
 GAMEPLAY_BLUR_RADIUS = 5       # Soften the background without smearing details
@@ -200,3 +200,13 @@ DEFAULT_GAMEPLAY_QUERIES = [
 ]
 GAMEPLAY_YTDLP_FORMAT = "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080][ext=mp4]/best"
 GAMEPLAY_MAX_DURATION_S = 600   # Don't download videos longer than 10 min
+
+# ── Performance tuning (Ryzen 7900X and multi-core CPUs) ──────────────────
+# Normalized gameplay clips cached for reuse (reduces re-encoding on similar posts)
+GAMEPLAY_CACHE_DIR = PROCESSED_GAMEPLAY_DIR
+GAMEPLAY_ENABLE_CACHE = True  # Set False to always re-normalize clips (for debugging)
+
+# Parallel post processing — safely use N processes with shared memory for large batches
+# Recommend: cpu_count() // 3 for heavy encoding (e.g., 4 posts on 12c = 3 per, 1 leftover)
+# Each post uses ~2-3 cores during TTS, full CPU during FFmpeg video composition
+MAX_PARALLEL_POSTS = None  # None = auto-detect; max(1, cpu_count() // 3)

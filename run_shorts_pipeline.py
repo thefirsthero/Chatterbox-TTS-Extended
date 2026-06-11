@@ -114,11 +114,15 @@ def main() -> int:
 
     # ── Manual single post mode (ID or URL) ───────────────────────────────
     if args.post_id or args.post_url:
-        from reddit_shorts.scraper import fetch_post_public
+        from reddit_shorts.scraper import fetch_post_public, is_post_done
 
         selector = args.post_url or args.post_id
         print(f"[cli] Fetching single post: {selector}")
         post = fetch_post_public(selector, subreddit_hint=subreddit)
+
+        if is_post_done(post.post_id):
+            print(f"[cli] Skipping {post.post_id} — post already processed")
+            return 0
 
         if safety_enabled:
             decision = evaluate_post(post, blocked_terms)

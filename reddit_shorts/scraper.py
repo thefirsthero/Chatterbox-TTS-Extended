@@ -154,6 +154,9 @@ def is_post_done(post_id: str) -> bool:
 
 def mark_post_done(post_id: str) -> None:
     cfg.DONE_POSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    done_ids = _load_done_posts()
+    if post_id in done_ids:
+        return
     with cfg.DONE_POSTS_FILE.open("a", encoding="utf-8") as f:
         f.write(post_id + "\n")
 
