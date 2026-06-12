@@ -277,6 +277,8 @@ def run_batch(
     min_body_chars: int = cfg.MIN_BODY_CHARS,
     max_body_chars: int = cfg.MAX_BODY_CHARS,
     auto_download_gameplay: bool = True,
+    gameplay_clips: Optional[list[str]] = None,
+    posts: Optional[list[RedditPost]] = None,
     dry_run: bool = False,
     safety_filter: bool = True,
     blocked_terms: Optional[list[str]] = None,
@@ -294,6 +296,8 @@ def run_batch(
     min_body_chars          : Minimum post body length
     max_body_chars          : Maximum post body length
     auto_download_gameplay  : Download Minecraft footage if none found locally
+    gameplay_clips          : Optional pre-loaded gameplay clips (skips internal loading if provided)
+    posts                   : Optional pre-loaded posts (skips scraping if provided)
     dry_run                 : If True, only print what would be done (no TTS/video)
     safety_filter           : If True, skip posts matching blocked terms
     blocked_terms           : Optional override/extension for blocked keywords
@@ -304,25 +308,27 @@ def run_batch(
     )
 
     # Pre-load gameplay clips once for the whole batch
-    gameplay_clips = None
-    if not dry_run:
+    if gameplay_clips is None and not dry_run:
         gameplay_clips = ensure_gameplay_footage(auto_download=auto_download_gameplay)
 
-    # Scrape posts
-    posts = scrape_posts(
-        subreddit_name=subreddit,
-        sort=sort,
-        top_time=top_time,
-        min_upvotes=min_upvotes,
-        min_body_chars=min_body_chars,
-        max_body_chars=max_body_chars,
-        desired_count=max_videos,
-    )
-    if not posts:
-        print("[pipeline] No posts passed the filters. Try changing sort/subreddit/min_upvotes.")
-        return []
+    # Use provided posts or scrape fresh ones
+    if posts is not None:
+        print(f"[pipeline] Using {len(posts)} pre-loaded post(s)")
+    else:
+        posts = scrape_posts(
+            subreddit_name=subreddit,
+            sort=sort,
+            top_time=top_time,
+            min_upvotes=min_upvotes,
+            min_body_chars=min_body_chars,
+            max_body_chars=max_body_chars,
+            desired_count=max_videos,
+        )
+        if not posts:
+            print("[pipeline] No posts passed the filters. Try changing sort/subreddit/min_upvotes.")
+            return []
 
-    print(f"[pipeline] {len(posts)} post(s) ready to process")
+        print(f"[pipeline] {len(posts)} post(s) ready to process")
 
     terms = blocked_terms if blocked_terms is not None else cfg.SAFETY_BLOCKED_TERMS
 

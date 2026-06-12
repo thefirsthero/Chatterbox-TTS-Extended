@@ -216,7 +216,8 @@ def main() -> int:
 
         from reddit_shorts.pipeline import run_batch
         result = run_batch(
-            posts[: args.max],
+            max_videos=len(posts[: args.max]),
+            posts=posts[: args.max],
             gameplay_clips=gameplay_clips,
             safety_filter=safety_enabled,
             blocked_terms=blocked_terms,
