@@ -41,14 +41,25 @@ jobs_lock = threading.Lock()
 
 
 def _run_generate_job(job_id: str):
-    """Background thread for video generation."""
+    """Background thread for video generation. Runs at lowest CPU priority so the API stays responsive."""
     with jobs_lock:
         jobs[job_id]["status"] = "processing"
         jobs[job_id]["started_at"] = datetime.now(timezone.utc).isoformat()
 
     try:
-        cmd = [sys.executable, "/app/run_shorts_pipeline.py", "--local-posts", "--max", "1"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd="/app")
+        # Run with nice -n 19 (lowest priority) so the API never starves
+        cmd = [
+            "nice", "-n", "19",
+            sys.executable, "/app/run_shorts_pipeline.py",
+            "--local-posts", "--max", "1"
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=1200,  # 20 minutes — CPU TTS is slow, quality > speed
+            cwd="/app"
+        )
 
         if result.returncode != 0:
             with jobs_lock:
@@ -81,7 +92,7 @@ def _run_generate_job(job_id: str):
     except subprocess.TimeoutExpired:
         with jobs_lock:
             jobs[job_id]["status"] = "error"
-            jobs[job_id]["error"] = "Generation timed out (10 min limit)."
+            jobs[job_id]["error"] = "Generation timed out (20 min limit). CPU TTS may be too slow for this post length."
     except Exception as e:
         with jobs_lock:
             jobs[job_id]["status"] = "error"
