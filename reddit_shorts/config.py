@@ -22,9 +22,9 @@ SUBREDDIT = "AmItheAsshole"
 
 # Only include posts that are popular, resolved, and substantial enough to narrate
 POST_LIMIT_FETCH = 75          # How many hot/top posts to pull before filtering
-MIN_UPVOTES = 2_000            # Minimum score
+MIN_UPVOTES = 1_000            # Minimum score (lowered for server)
 MIN_BODY_CHARS = 450           # Too short = boring short
-MAX_BODY_CHARS = 1_500         # Enforced max 180s video; tighter than old ~70–150s estimate
+MAX_BODY_CHARS = 1_800         # Server is more permissive for pipeline automation
 
 # Only process posts with one of these resolved flairs (None = no filter)
 FLAIR_WHITELIST = [
@@ -39,7 +39,7 @@ TOP_COMMENTS_COUNT = 3
 MAX_COMMENT_CHARS = 220        # Trim comments longer than this
 
 # Maximum video length constraint (TikTok/Shorts practical limit)
-MAX_VIDEO_DURATION_S = 180     # 3 minutes hard limit
+MAX_VIDEO_DURATION_S = 300     # 5 minutes limit (server, CPU generation may take longer)
 
 # ── Platform safety filters ───────────────────────────────────────────────
 # Posts containing these terms are skipped before TTS/video generation.
