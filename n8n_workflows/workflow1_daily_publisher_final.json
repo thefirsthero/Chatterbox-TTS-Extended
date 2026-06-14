@@ -79,6 +79,7 @@
     },
     {
       "parameters": {
+        "webhookUri": "https://discordapp.com/api/webhooks/WEBHOOK_URL_REMOVED",
         "text": "⚠️ **Postiz Queue Empty!**\n\nThere are no pending videos in the queue.\n\nPlease upload new videos to the Google Drive folder:\nhttps://drive.google.com/drive/u/2/folders/1Bc6E-_w1fo_yi5gvbyAS7BDUZ5qLL4Pp\n\nThe next Weekly Queue Sync will pick them up automatically.",
         "options": {}
       },
@@ -86,13 +87,7 @@
       "name": "Send Empty Queue Alert",
       "type": "n8n-nodes-base.discord",
       "typeVersion": 1,
-      "position": [0, 0],
-      "credentials": {
-        "discordWebhookApi": {
-          "id": "loeSAvsxpNbun8Ah",
-          "name": "Discord Webhook account"
-        }
-      }
+      "position": [0, 0]
     },
     {
       "parameters": {
@@ -355,6 +350,7 @@
     },
     {
       "parameters": {
+        "webhookUri": "https://discordapp.com/api/webhooks/WEBHOOK_URL_REMOVED",
         "text": "✅ **Post Published & Cleaned Up!**\n\nVideo: `{{ $('Prepare Post Data').first().json.file_name }}`\n\n📸 Instagram: `{{ $json.instagram_post_id }}`\n▶️ YouTube: `{{ $json.youtube_post_id }}`\n🎵 TikTok (sandbox): `{{ $json.tiktok_post_id }}`\n🗑️ Deleted from Drive\n\nRemaining in queue: check Sheets",
         "options": {}
       },
@@ -362,13 +358,7 @@
       "name": "Send Success Notification",
       "type": "n8n-nodes-base.discord",
       "typeVersion": 1,
-      "position": [1200, 256],
-      "credentials": {
-        "discordWebhookApi": {
-          "id": "loeSAvsxpNbun8Ah",
-          "name": "Discord Webhook account"
-        }
-      }
+      "position": [1200, 256]
     }
   ],
   "connections": {

@@ -131,6 +131,7 @@
     },
     {
       "parameters": {
+        "webhookUri": "https://discordapp.com/api/webhooks/WEBHOOK_URL_REMOVED",
         "text": "=⚠️ **Low Inventory Alert!**\n\n📊 Queue Status:\n• 🆕 **{{ $json.new_count }}** new videos remaining\n• ✅ {{ $json.done_count }} already posted\n• ❌ {{ $json.failed_count }} failed\n\n🔴 Only **{{ $json.new_count }}** videos left — upload more!\n\nUpload new videos to:\nhttps://drive.google.com/drive/u/2/folders/1Bc6E-_w1fo_yi5gvbyAS7BDUZ5qLL4Pp",
         "options": {}
       },
@@ -138,16 +139,11 @@
       "name": "Send Low Inventory Alert",
       "type": "n8n-nodes-base.discord",
       "typeVersion": 1,
-      "position": [1600, 112],
-      "credentials": {
-        "discordWebhookApi": {
-          "id": "loeSAvsxpNbun8Ah",
-          "name": "Discord Webhook account"
-        }
-      }
+      "position": [1600, 112]
     },
     {
       "parameters": {
+        "webhookUri": "https://discordapp.com/api/webhooks/WEBHOOK_URL_REMOVED",
         "text": "=📊 **Weekly Queue Report**\n\nQueue is healthy! 👍\n\n• 🆕 **{{ $json.new_count }}** videos available\n• ✅ {{ $json.done_count }} posted\n• ❌ {{ $json.failed_count }} failed\n• 📦 {{ $json.total }} total tracked\n\nNext post: Tomorrow at 19:00 SAST",
         "options": {}
       },
@@ -155,13 +151,7 @@
       "name": "Send Healthy Report",
       "type": "n8n-nodes-base.discord",
       "typeVersion": 1,
-      "position": [1600, 304],
-      "credentials": {
-        "discordWebhookApi": {
-          "id": "loeSAvsxpNbun8Ah",
-          "name": "Discord Webhook account"
-        }
-      }
+      "position": [1600, 304]
     },
     {
       "parameters": {
