@@ -13,5 +13,9 @@ yt-dlp>=2024.1.1
 # Public JSON fallback scraping
 requests>=2.31.0
 
+# HTML scraping fallback (old.reddit.com)
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
 # .env file support (optional but recommended for Reddit credentials)
 python-dotenv>=1.0.0
