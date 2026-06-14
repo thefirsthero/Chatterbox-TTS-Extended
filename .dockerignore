@@ -1,0 +1,48 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Output (will be mounted as volume)
+output/
+video_clips/
+voice_profiles/
+
+# Node/JS
+node_modules/
+.npm/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp/test
+tmp/
+temp/
+*.log
+
+# Docker
+docker/
+Dockerfile
+.dockerignore
+
+# Large models downloaded at build time
+chatterbox/src/chatterbox/models/*.safetensors
+chatterbox/src/chatterbox/models/*.bin
+
+# n8n workflows (contains secrets)
+n8n_workflows/
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
