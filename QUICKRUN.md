@@ -1,6 +1,7 @@
 # Quick Run Guide
 
 ## Setup
+
 ```bash
 # Activate virtual environment
 .\.venv\Scripts\Activate.ps1
@@ -10,7 +11,9 @@ source .venv/bin/activate
 ```
 
 ## Scraping Strategy
+
 The pipeline automatically falls back through these methods:
+
 1. **OAuth/PRAW** — if Reddit API credentials exist
 2. **Public JSON** — blocked since mid-2026, tried for compat
 3. **HTML scrape** (old.reddit.com) — **primary fallback**, most reliable
@@ -20,6 +23,7 @@ The pipeline automatically falls back through these methods:
 No OAuth credentials, API keys, or app registration required.
 
 ## Prefetch Posts (Offline Mode)
+
 ```bash
 # Prefetch 20 posts into local JSON cache
 python run_shorts_pipeline.py --prefetch-local-posts --prefetch-count 20
@@ -29,6 +33,7 @@ python run_shorts_pipeline.py --local-posts --max 3
 ```
 
 ## Default Pipeline
+
 ```bash
 # Generate 3 videos from r/AmItheAsshole hot posts (uses HTML scrape)
 python run_shorts_pipeline.py
@@ -38,6 +43,7 @@ python run_shorts_pipeline.py --max 5 --subreddit tifu --sort top --top-time wee
 ```
 
 ## Process Specific Posts
+
 ```bash
 # Single post by ID
 python run_shorts_pipeline.py --post-id 1tbgfyh
@@ -50,6 +56,7 @@ python run_shorts_pipeline.py --post-list-file scripts/post_urls.txt
 ```
 
 ## Filters & Options
+
 ```bash
 # Apply minimum upvotes/body length filters
 python run_shorts_pipeline.py --min-upvotes 3000 --min-body-chars 500
@@ -62,6 +69,7 @@ python run_shorts_pipeline.py --safety-extra-keywords "crypto,nft,gambling"
 ```
 
 ## Gameplay & Testing
+
 ```bash
 # Download Minecraft clips only
 python run_shorts_pipeline.py --download-gameplay-only
@@ -74,6 +82,7 @@ python run_shorts_pipeline.py --voice-profile output/voice_profiles/custom.pt
 ```
 
 ## Output Locations
+
 - **Final videos**: `output/videos/`
 - **Per-post work**: `output/shorts/<post_id>/`
   - `video.mp4` — final short
@@ -86,6 +95,7 @@ python run_shorts_pipeline.py --voice-profile output/voice_profiles/custom.pt
 - **Done posts log**: `output/shorts/done_posts.txt`
 
 ## Troubleshooting
+
 **Post fetch fails (403, timeout, etc.)**  
 → The pipeline auto-falls back through HTML scrape → RSS → cache. If all fail, check network connectivity or try `--sort top --top-time week` for different content.
 

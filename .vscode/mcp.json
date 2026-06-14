@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "coolify": {
+      "command": "npx",
+      "args": ["-y", "@felixallistar/coolify-mcp"],
+      "env": {
+        "COOLIFY_API_URL": "https://coolify.coraxi.com",
+        "COOLIFY_API_TOKEN": "1|K12Z25yXbC1uQESg2kkZS1lSEiF1Oa9V6Ih9vPWcc94a760b"
+      }
+    }
+  }
+}
