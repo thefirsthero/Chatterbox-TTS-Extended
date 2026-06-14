@@ -25,6 +25,7 @@ from typing import Optional
 
 import praw
 import requests
+from bs4 import BeautifulSoup
 
 from reddit_shorts import config as cfg
 
@@ -219,6 +220,221 @@ def _fetch_top_comments_public(subreddit_name: str, post_id: str, limit: int = 2
         return out
     except Exception:
         return []
+
+
+# ── HTML scraping (old.reddit.com) ──────────────────────────────────────────
+# This is the most future-proof approach. old.reddit.com renders pure HTML
+# that is trivial to parse. It does not rely on:
+#   - The .json API (now blocked without OAuth)
+#   - RSS feeds (may be killed)
+#   - OAuth2 credentials (no app needed)
+# old.reddit.com has maintained the same HTML structure for over a decade.
+
+_HTML_UA = os.environ.get(
+    "REDDIT_USER_AGENT",
+    "RedditShorts:v1.0 (html-scraper)",
+)
+
+
+def _fetch_post_public_html(post_id: str, subreddit: str | None = None) -> RedditPost:
+    """Fetch a single Reddit post by scraping old.reddit.com HTML."""
+    slug = f"https://old.reddit.com/r/{subreddit}/comments/{post_id}/" if subreddit else f"https://old.reddit.com/comments/{post_id}/"
+    resp = requests.get(slug, headers={"User-Agent": _HTML_UA}, timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTML post fetch failed ({resp.status_code}) for {post_id}")
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    thing = soup.find("div", class_="thing", attrs={"data-type": "link"})
+    if thing is None:
+        raise RuntimeError(f"No post data found in HTML for {post_id}")
+
+    pid_raw = thing.get("data-fullname", "")  # "t3_1tbgfyh"
+    pid = pid_raw.replace("t3_", "") if pid_raw else post_id
+    found_sub = thing.get("data-subreddit", subreddit or "unknown")
+    author = thing.get("data-author", "[deleted]")
+    score = int(thing.get("data-score", 0) or 0)
+    num_comments = int(thing.get("data-num-comments", 0) or 0)
+    permalink = thing.get("data-permalink", f"/r/{found_sub}/comments/{pid}/")
+
+    title_elem = soup.find("a", class_="title")
+    title = title_elem.text.strip() if title_elem else ""
+
+    flair_elem = soup.find("span", class_="linkflairlabel")
+    flair = flair_elem.text.strip() if flair_elem else None
+
+    # Body is inside the .entry .usertext-body
+    body = ""
+    entry = thing.find("div", class_="entry")
+    if entry:
+        utb = entry.find("div", class_="usertext-body")
+        if utb:
+            md = utb.find("div", class_="md")
+            if md:
+                body = md.get_text("\n", strip=True)
+
+    # Comments — extracted from .thing divs with data-type="comment"
+    top_comments: list[str] = []
+    for comment_thing in soup.find_all("div", class_="thing", attrs={"data-type": "comment"}):
+        cbody_div = comment_thing.find("div", class_="md")
+        if cbody_div is None:
+            continue
+        ctext = cbody_div.get_text(" ", strip=True)
+        if len(ctext) < 20 or len(ctext) > cfg.MAX_COMMENT_CHARS:
+            continue
+        clower = ctext.lower()
+        if "[removed]" in clower or "[deleted]" in clower or "i am a bot" in clower:
+            continue
+        top_comments.append(ctext)
+        if len(top_comments) >= cfg.TOP_COMMENTS_COUNT:
+            break
+
+    return RedditPost(
+        post_id=pid,
+        title=title,
+        body=_clean_body(body),
+        author=author,
+        upvotes=score,
+        num_comments=num_comments,
+        flair=flair,
+        url=f"https://reddit.com{permalink}",
+        subreddit=found_sub,
+        top_comments=top_comments,
+    )
+
+
+def _scrape_posts_public_html(
+    subreddit_name: str,
+    fetch_limit: int,
+    min_upvotes: int,
+    min_body_chars: int,
+    max_body_chars: int,
+    flair_whitelist: list[str] | None,
+    skip_done: bool,
+    sort: str,
+    top_time: str,
+) -> list[RedditPost]:
+    """Scrape a subreddit listing from old.reddit.com HTML."""
+    done = _load_done_posts() if skip_done else set()
+
+    if sort == "top":
+        list_url = f"https://old.reddit.com/r/{subreddit_name}/top/"
+        params: dict[str, str] = {"t": top_time, "limit": str(fetch_limit)}
+    elif sort == "new":
+        list_url = f"https://old.reddit.com/r/{subreddit_name}/new/"
+        params = {"limit": str(fetch_limit)}
+    else:
+        list_url = f"https://old.reddit.com/r/{subreddit_name}/hot/"
+        params = {"limit": str(fetch_limit)}
+
+    resp = requests.get(
+        list_url,
+        headers={"User-Agent": _HTML_UA},
+        params=params,
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Public HTML listing request failed ({resp.status_code}) for r/{subreddit_name}"
+        )
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    things = soup.find_all("div", class_="thing", attrs={"data-type": "link"})
+
+    posts: list[RedditPost] = []
+    for thing in things:
+        pid_raw = thing.get("data-fullname", "")
+        pid = pid_raw.replace("t3_", "") if pid_raw else ""
+        if not pid or pid in done:
+            continue
+
+        score = int(thing.get("data-score", 0) or 0)
+        if score < min_upvotes:
+            continue
+
+        domain = thing.get("data-domain", "")
+        if domain and not domain.startswith("self."):
+            continue  # skip link posts, only keep self/text posts
+
+        title_elem = thing.find("a", class_="title")
+        title = title_elem.text.strip() if title_elem else ""
+        if not title:
+            continue
+
+        author = thing.get("data-author", "[deleted]")
+        found_sub = thing.get("data-subreddit", subreddit_name)
+        num_comments = int(thing.get("data-num-comments", 0) or 0)
+        permalink = thing.get("data-permalink", f"/r/{found_sub}/comments/{pid}/")
+
+        # For listing pages, the full body is not available without expanding.
+        # We fetch the individual post page to get the body.
+        # To keep things fast, fetch the body in a separate pass.
+        # For now, set body empty and do a follow-up fetch.
+        body = ""
+        expando = thing.find("div", class_="expando")
+        if expando:
+            md = expando.find("div", class_="md")
+            if md:
+                body = md.get_text("\n", strip=True)
+
+        # On listing pages, body is often empty (expando collapsed).
+        # Don't filter by body length here; do it after the follow-up fetch below.
+        if max_body_chars is not None and len(body) > max_body_chars:
+            continue
+
+        flair_elem = thing.find("span", class_="linkflairlabel")
+        flair = flair_elem.text.strip() if flair_elem else None
+        if flair_whitelist and not any(allowed.lower() in (flair or "").lower() for allowed in flair_whitelist):
+            continue
+
+        posts.append(
+            RedditPost(
+                post_id=pid,
+                title=title,
+                body=_clean_body(body),
+                author=author,
+                upvotes=score,
+                num_comments=num_comments,
+                flair=flair,
+                url=f"https://reddit.com{permalink}",
+                subreddit=found_sub,
+                top_comments=[],
+            )
+        )
+
+    # For posts that need body fetched individually, do parallel fetches
+    posts_to_fetch = [p for p in posts if len(p.body) < min_body_chars or not p.body]
+    if posts_to_fetch:
+        print(f"[scraper] HTML mode: fetching full body for {len(posts_to_fetch)} post(s)...")
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            def _fetch_body(fp: RedditPost) -> RedditPost | None:
+                try:
+                    full = _fetch_post_public_html(fp.post_id, subreddit=fp.subreddit)
+                    fp.body = full.body
+                    fp.top_comments = full.top_comments
+                    return fp
+                except Exception:
+                    return None
+            results = list(executor.map(_fetch_body, posts_to_fetch))
+        # Track which post_ids were successfully enriched
+        enriched_ids: set[str] = set()
+        for r in results:
+            if r is not None:
+                enriched_ids.add(r.post_id)
+        # Remove posts that still don't meet body length criteria after fetch
+        posts = [
+            p for p in posts
+            if len(p.body) >= min_body_chars
+            and (max_body_chars is None or len(p.body) <= max_body_chars)
+            and (p.post_id not in posts_to_fetch or p.post_id in enriched_ids)
+        ]
+
+    posts.sort(key=lambda p: p.upvotes, reverse=True)
+    print(
+        f"[scraper] Public HTML mode: fetched {fetch_limit} posts -> "
+        f"{len(posts)} passed filters from r/{subreddit_name}"
+    )
+    return posts
 
 
 def _strip_html_tags(text: str) -> str:
@@ -516,7 +732,11 @@ def fetch_post_public(post_id_or_url: str, subreddit_hint: str | None = None) ->
         if not isinstance(payload, list) or len(payload) < 1:
             raise RuntimeError(f"Unexpected Reddit response for {post_id}")
     except Exception:
-        return _fetch_post_public_rss(post_id, subreddit=subreddit)
+        # JSON blocked (403) → try HTML scrape, then RSS as last resort
+        try:
+            return _fetch_post_public_html(post_id, subreddit=subreddit)
+        except Exception:
+            return _fetch_post_public_rss(post_id, subreddit=subreddit)
 
     listing = payload[0]
     children = listing.get("data", {}).get("children", [])
@@ -926,9 +1146,9 @@ def scrape_posts(
             _save_scrape_cache(query, posts, source="public-json")
             return posts
         except Exception as json_exc:
-            print(f"[scraper] Public JSON failed ({json_exc}). Falling back to RSS mode.")
+            print(f"[scraper] Public JSON failed ({json_exc}). Trying HTML scrape mode...")
             try:
-                posts = _scrape_posts_public_rss(
+                posts = _scrape_posts_public_html(
                     subreddit_name=subreddit_name,
                     fetch_limit=fetch_limit,
                     min_upvotes=min_upvotes,
@@ -939,13 +1159,29 @@ def scrape_posts(
                     sort=sort,
                     top_time=top_time,
                 )
-                _save_scrape_cache(query, posts, source="public-rss")
+                _save_scrape_cache(query, posts, source="public-html")
                 return posts
-            except Exception:
-                if cached_posts is not None:
-                    print(f"[scraper] Falling back to cached results for r/{subreddit_name}")
-                    return cached_posts
-                raise
+            except Exception as html_exc:
+                print(f"[scraper] HTML mode failed ({html_exc}). Falling back to RSS mode.")
+                try:
+                    posts = _scrape_posts_public_rss(
+                        subreddit_name=subreddit_name,
+                        fetch_limit=fetch_limit,
+                        min_upvotes=min_upvotes,
+                        min_body_chars=min_body_chars,
+                        max_body_chars=max_body_chars,
+                        flair_whitelist=flair_whitelist,
+                        skip_done=skip_done,
+                        sort=sort,
+                        top_time=top_time,
+                    )
+                    _save_scrape_cache(query, posts, source="public-rss")
+                    return posts
+                except Exception:
+                    if cached_posts is not None:
+                        print(f"[scraper] Falling back to cached results for r/{subreddit_name}")
+                        return cached_posts
+                    raise
 
 
 def generate_post_urls_to_file(

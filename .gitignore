@@ -21,8 +21,10 @@ tmp_*.py
 
 # Large reference audio files (>100 MB — use Git LFS or store externally)
 *.wav
-!ASMR-Ginny-Reference.wav
 
 n8n_workflows/
 
 tmp/
+
+# Local config (UI settings, local paths)
+settings.json

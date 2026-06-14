@@ -353,7 +353,7 @@ def run_batch(
 
     if dry_run:
         for post in posts_to_process:
-            print(f"[DRY RUN] Would process: [{post.flair}] {post.title[:80]} ({post.upvotes:,} ▲)")
+            print(f"[DRY RUN] Would process: [{post.flair}] {post.title[:80]} ({post.upvotes:,} upvotes)")
         print(
             f"\n[pipeline] Dry run complete: {len(posts_to_process)} video(s) would be produced"
         )

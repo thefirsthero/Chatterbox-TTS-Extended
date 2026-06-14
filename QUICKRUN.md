@@ -1,7 +1,6 @@
 # Quick Run Guide
 
 ## Setup
-
 ```bash
 # Activate virtual environment
 .\.venv\Scripts\Activate.ps1
@@ -10,20 +9,28 @@
 source .venv/bin/activate
 ```
 
-## Prefetch Posts (Offline Mode)
+## Scraping Strategy
+The pipeline automatically falls back through these methods:
+1. **OAuth/PRAW** — if Reddit API credentials exist
+2. **Public JSON** — blocked since mid-2026, tried for compat
+3. **HTML scrape** (old.reddit.com) — **primary fallback**, most reliable
+4. **RSS** — last resort fallback (may be killed in future)
+5. **Local cache** — if all else fails
 
+No OAuth credentials, API keys, or app registration required.
+
+## Prefetch Posts (Offline Mode)
 ```bash
-# Prefetch 20 posts into local cache
+# Prefetch 20 posts into local JSON cache
 python run_shorts_pipeline.py --prefetch-local-posts --prefetch-count 20
 
-# Then run pipeline using cached posts (no Reddit API calls)
+# Then run pipeline using cached posts (no Reddit requests at all)
 python run_shorts_pipeline.py --local-posts --max 3
 ```
 
-## Default Pipeline (Live Scraping)
-
+## Default Pipeline
 ```bash
-# Generate 3 videos from r/AmItheAsshole hot posts
+# Generate 3 videos from r/AmItheAsshole hot posts (uses HTML scrape)
 python run_shorts_pipeline.py
 
 # Generate 5 videos, different sort/subreddit
@@ -31,7 +38,6 @@ python run_shorts_pipeline.py --max 5 --subreddit tifu --sort top --top-time wee
 ```
 
 ## Process Specific Posts
-
 ```bash
 # Single post by ID
 python run_shorts_pipeline.py --post-id 1tbgfyh
@@ -44,7 +50,6 @@ python run_shorts_pipeline.py --post-list-file scripts/post_urls.txt
 ```
 
 ## Filters & Options
-
 ```bash
 # Apply minimum upvotes/body length filters
 python run_shorts_pipeline.py --min-upvotes 3000 --min-body-chars 500
@@ -57,7 +62,6 @@ python run_shorts_pipeline.py --safety-extra-keywords "crypto,nft,gambling"
 ```
 
 ## Gameplay & Testing
-
 ```bash
 # Download Minecraft clips only
 python run_shorts_pipeline.py --download-gameplay-only
@@ -70,7 +74,6 @@ python run_shorts_pipeline.py --voice-profile output/voice_profiles/custom.pt
 ```
 
 ## Output Locations
-
 - **Final videos**: `output/videos/`
 - **Per-post work**: `output/shorts/<post_id>/`
   - `video.mp4` — final short
@@ -78,22 +81,25 @@ python run_shorts_pipeline.py --voice-profile output/voice_profiles/custom.pt
   - `script.txt` — full narration text
   - `reddit_card.png` — Reddit post card
   - `subtitles.ass` — subtitle file
-- **Local post cache**: `output/cache/local_posts/` (JSON files)
+- **Post cache**: `output/cache/reddit_scrapes/` (auto-scrape cache)
+- **Local post cache**: `output/cache/local_posts/` (--local-posts mode)
 - **Done posts log**: `output/shorts/done_posts.txt`
 
 ## Troubleshooting
-
-**RSS timeout or 403 errors**  
-→ Network issue; try again or switch sort/subreddit
+**Post fetch fails (403, timeout, etc.)**  
+→ The pipeline auto-falls back through HTML scrape → RSS → cache. If all fail, check network connectivity or try `--sort top --top-time week` for different content.
 
 **Empty video output**  
 → Check `output/shorts/<post_id>/error.log` for details
 
 **No posts passed filters**  
-→ Reduce `--min-upvotes` or `--min-body-chars`
+→ Reduce `--min-upvotes` or `--min-body-chars`. On old.reddit.com listing pages, scores and flairs may differ from the JSON API.
 
 **Missing gameplay clips**  
 → Run `python run_shorts_pipeline.py --download-gameplay-only`
+
+**RSS/HTML scrape returns 0 posts**  
+→ Try `--sort top --top-time week` or a different subreddit via `--subreddit`
 
 ---
 
