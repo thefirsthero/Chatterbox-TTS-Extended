@@ -1,0 +1,384 @@
+{
+  "name": "Postiz Daily Publisher (19:00 SAST)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 17 * * *"
+            }
+          ]
+        }
+      },
+      "id": "e7075f5a-f46d-431c-9972-df16f9b2975e",
+      "name": "Daily at 19:00 SAST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [-800, 64]
+    },
+    {
+      "parameters": {
+        "sheetId": "1tlR_MCm-sSmD4w59TV5AWf-rRx35tERR45zF2QGP2NU",
+        "range": "A1:E1000",
+        "options": {}
+      },
+      "id": "d14b6f98-51d8-4d24-b1fb-c6381aaebb36",
+      "name": "Read Queue Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 2,
+      "position": [-608, 64],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "T6qcURDR55EzrkB3",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nlet nextVideo = null;\nlet nextIndex = -1;\n\nfor (let i = 0; i < rows.length; i++) {\n  const d = rows[i].json;\n  if (d.status === 'new' || d.status === 'failed') {\n    nextVideo = d;\n    nextIndex = i;\n    break;\n  }\n}\n\nif (!nextVideo) {\n  return [{ noVideos: true, message: 'No pending videos in queue' }];\n}\n\nreturn [{\n  noVideos: false,\n  file_name: nextVideo.file_name,\n  drive_file_id: nextVideo.drive_file_id,\n  row_number: nextIndex + 2\n}];"
+      },
+      "id": "4840edfd-3eea-4967-b2ba-1a944267d2dc",
+      "name": "Find Next Video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, 64]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "bcfde940-90e5-4806-84b2-cb62803b6e0f",
+              "leftValue": "={{ json.noVideos }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "62fe1718-93c1-49aa-8ac9-154313691662",
+      "name": "Any Videos?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-208, 64]
+    },
+    {
+      "parameters": {
+        "webhookUri": "https://discordapp.com/api/webhooks/WEBHOOK_URL_REMOVED",
+        "text": "⚠️ **Postiz Queue Empty!**\n\nThere are no pending videos in the queue.\n\nPlease upload new videos to the Google Drive folder:\nhttps://drive.google.com/drive/u/2/folders/1Bc6E-_w1fo_yi5gvbyAS7BDUZ5qLL4Pp\n\nThe next Weekly Queue Sync will pick them up automatically.",
+        "options": {}
+      },
+      "id": "f6d65a14-5005-4198-8dbf-6ac1afc781df",
+      "name": "Send Empty Queue Alert",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "download",
+        "fileId": "={{ $json.drive_file_id }}",
+        "options": {}
+      },
+      "id": "e91b02f7-71d9-4b08-b755-df8f60af1d4f",
+      "name": "Download from Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 1,
+      "position": [0, 160],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "LivgyKYRPWgHP5Cs",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "uploadFile",
+        "binaryProperty": "data"
+      },
+      "id": "8d23670e-674f-48e6-b697-e8539229bf0d",
+      "name": "Upload Video to Postiz",
+      "type": "n8n-nodes-postiz.postiz",
+      "typeVersion": 1,
+      "position": [208, 160],
+      "credentials": {
+        "postizApi": {
+          "id": "curagy5hLJtLfIJ8",
+          "name": "Postiz account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const uploadResponse = $input.first().json;\nconst fileName = $('Find Next Video').first().json.file_name;\nconst now = new Date();\nconst publishDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 17, 0, 0));\n\nreturn [{\n  media_id: uploadResponse.id || uploadResponse.assetId || uploadResponse.fileId,\n  media_path: uploadResponse.path || uploadResponse.url,\n  file_name: fileName,\n  publish_date: publishDate.toISOString()\n}];"
+      },
+      "id": "ee47fbc4-86b9-41cd-9c9b-e68b523519ba",
+      "name": "Prepare Post Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 160]
+    },
+    {
+      "parameters": {
+        "type": "schedule",
+        "date": "={{ $json.publish_date }}",
+        "posts": {
+          "post": [
+            {
+              "integrationId": "cmpn1ftgq0001mu83g5pwswlt",
+              "settings": {
+                "setting": [
+                  { "key": "__type", "stringValue": "instagram-standalone" },
+                  { "key": "post_type", "stringValue": "post" }
+                ]
+              },
+              "value": {
+                "contentItem": [
+                  {
+                    "content": "Am I the as*hole?🤔 Follow for more!\n\n#shorts #reddit #redditstories",
+                    "image": {
+                      "imageItem": [
+                        { "id": "={{ $json.media_id }}", "path": "={{ $json.media_path }}" }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "0cee205a-ef7a-4c02-b389-e9aa588ebae3",
+      "name": "Post to Instagram",
+      "type": "n8n-nodes-postiz.postiz",
+      "typeVersion": 1,
+      "position": [608, 64],
+      "credentials": {
+        "postizApi": {
+          "id": "curagy5hLJtLfIJ8",
+          "name": "Postiz account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "type": "schedule",
+        "date": "={{ $('Prepare Post Data').first().json.publish_date }}",
+        "posts": {
+          "post": [
+            {
+              "integrationId": "cmpoglbpv0001k58e1diod90h",
+              "settings": {
+                "setting": [
+                  { "key": "__type", "stringValue": "youtube" },
+                  { "key": "title", "stringValue": "Am I the as*hole?🤔 Follow for more!" },
+                  { "key": "type", "stringValue": "public" },
+                  { "key": "selfDeclaredMadeForKids", "stringValue": "no" },
+                  { "key": "tags", "jsonValue": "[{\"value\":\"shorts\",\"label\":\"shorts\"},{\"value\":\"reddit\",\"label\":\"reddit\"},{\"value\":\"redditstories\",\"label\":\"redditstories\"}]", "valueType": "json" }
+                ]
+              },
+              "value": {
+                "contentItem": [
+                  {
+                    "content": "Am I the as*hole?🤔 Follow for more!\n\n#shorts #reddit #redditstories",
+                    "image": {
+                      "imageItem": [
+                        { "id": "={{ $('Prepare Post Data').first().json.media_id }}", "path": "={{ $('Prepare Post Data').first().json.media_path }}" }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "6b09cb11-2847-4319-963c-03eade807a57",
+      "name": "Post to YouTube Shorts",
+      "type": "n8n-nodes-postiz.postiz",
+      "typeVersion": 1,
+      "position": [608, 256],
+      "credentials": {
+        "postizApi": {
+          "id": "curagy5hLJtLfIJ8",
+          "name": "Postiz account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "type": "schedule",
+        "date": "={{ $('Prepare Post Data').first().json.publish_date }}",
+        "posts": {
+          "post": [
+            {
+              "integrationId": "cmpoiouhf0001pe8c2adcgnht",
+              "settings": {
+                "setting": [
+                  { "key": "__type", "stringValue": "tiktok" },
+                  { "key": "privacy_level", "stringValue": "SELF_ONLY" },
+                  { "key": "duet", "valueType": "boolean" },
+                  { "key": "stitch", "valueType": "boolean" },
+                  { "key": "comment", "booleanValue": true, "valueType": "boolean" },
+                  { "key": "autoAddMusic", "stringValue": "no" },
+                  { "key": "brand_content_toggle", "valueType": "boolean" },
+                  { "key": "brand_organic_toggle", "valueType": "boolean" },
+                  { "key": "content_posting_method", "stringValue": "UPLOAD" }
+                ]
+              },
+              "value": {
+                "contentItem": [
+                  {
+                    "content": "Am I the as*hole?🤔 Follow for more!\n\n#shorts #reddit #redditstories",
+                    "image": {
+                      "imageItem": [
+                        { "id": "={{ $('Prepare Post Data').first().json.media_id }}", "path": "={{ $('Prepare Post Data').first().json.media_path }}" }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "04e02e42-af88-446b-8bb1-f5eea9a39894",
+      "name": "Post to TikTok (Sandbox)",
+      "type": "n8n-nodes-postiz.postiz",
+      "typeVersion": 1,
+      "position": [608, 464],
+      "credentials": {
+        "postizApi": {
+          "id": "curagy5hLJtLfIJ8",
+          "name": "Postiz account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const igData = $input.all()[0]?.json || {};\nlet ytData = {}, ttData = {};\ntry { ytData = $('Post to YouTube Shorts').first()?.json || {}; } catch(e) {}\ntry { ttData = $('Post to TikTok (Sandbox)').first()?.json || {}; } catch(e) {}\nconst videoInfo = $('Prepare Post Data').first()?.json || {};\n\nreturn [{\n  success: true,\n  file_name: videoInfo.file_name || 'unknown',\n  instagram_post_id: igData.postId || 'not posted',\n  youtube_post_id: ytData.postId || 'not posted',\n  tiktok_post_id: ttData.postId || 'not posted',\n  processed_date: new Date().toISOString()\n}];"
+      },
+      "id": "0e0a6939-1daa-4738-8439-dd1667fbc1b5",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 256]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1tlR_MCm-sSmD4w59TV5AWf-rRx35tERR45zF2QGP2NU",
+          "mode": "list",
+          "cachedResultName": "Postiz Video Queue",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tlR_MCm-sSmD4w59TV5AWf-rRx35tERR45zF2QGP2NU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tlR_MCm-sSmD4w59TV5AWf-rRx35tERR45zF2QGP2NU/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "file_name": "={{ $('Prepare Post Data').first().json.file_name }}",
+            "status": "done",
+            "processed_date": "={{ $json.processed_date }}"
+          },
+          "matchingColumns": ["file_name"],
+          "schema": [
+            { "id": "file_name", "displayName": "file_name", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "drive_file_id", "displayName": "drive_file_id", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "status", "displayName": "status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "processed_date", "displayName": "processed_date", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "error_message", "displayName": "error_message", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [1008, 256],
+      "id": "f7f122d9-f8b8-4555-8ba3-b2587f651dab",
+      "name": "Mark Done",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "T6qcURDR55EzrkB3",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "delete",
+        "fileId": "={{ $('Find Next Video').first().json.drive_file_id }}"
+      },
+      "id": "834c6e8c-6d48-483d-aec8-e69734b49f47",
+      "name": "Delete Video from Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 1,
+      "position": [1200, 64],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "LivgyKYRPWgHP5Cs",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "webhookUri": "https://discordapp.com/api/webhooks/WEBHOOK_URL_REMOVED",
+        "text": "✅ **Post Published & Cleaned Up!**\n\nVideo: `{{ $('Prepare Post Data').first().json.file_name }}`\n\n📸 Instagram: `{{ $json.instagram_post_id }}`\n▶️ YouTube: `{{ $json.youtube_post_id }}`\n🎵 TikTok (sandbox): `{{ $json.tiktok_post_id }}`\n🗑️ Deleted from Drive\n\nRemaining in queue: check Sheets",
+        "options": {}
+      },
+      "id": "6b26781e-8d8d-4b23-a3f5-2b3292ae3069",
+      "name": "Send Success Notification",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 1,
+      "position": [1200, 256]
+    }
+  ],
+  "connections": {
+    "Daily at 19:00 SAST": { "main": [[{ "node": "Read Queue Sheet", "type": "main", "index": 0 }]] },
+    "Read Queue Sheet": { "main": [[{ "node": "Find Next Video", "type": "main", "index": 0 }]] },
+    "Find Next Video": { "main": [[{ "node": "Any Videos?", "type": "main", "index": 0 }]] },
+    "Any Videos?": { "main": [[{ "node": "Send Empty Queue Alert", "type": "main", "index": 0 }], [{ "node": "Download from Drive", "type": "main", "index": 0 }]] },
+    "Download from Drive": { "main": [[{ "node": "Upload Video to Postiz", "type": "main", "index": 0 }]] },
+    "Upload Video to Postiz": { "main": [[{ "node": "Prepare Post Data", "type": "main", "index": 0 }]] },
+    "Prepare Post Data": { "main": [[{ "node": "Post to Instagram", "type": "main", "index": 0 }]] },
+    "Post to Instagram": { "main": [[{ "node": "Post to YouTube Shorts", "type": "main", "index": 0 }]] },
+    "Post to YouTube Shorts": { "main": [[{ "node": "Post to TikTok (Sandbox)", "type": "main", "index": 0 }]] },
+    "Post to TikTok (Sandbox)": { "main": [[{ "node": "Merge Results", "type": "main", "index": 0 }]] },
+    "Merge Results": { "main": [[{ "node": "Mark Done", "type": "main", "index": 0 }]] },
+    "Mark Done": { "main": [[{ "node": "Delete Video from Drive", "type": "main", "index": 0 }]] },
+    "Delete Video from Drive": { "main": [[{ "node": "Send Success Notification", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "versionId": "b6c58071-2cc1-4034-87e5-3335f5932459",
+  "id": "FZf4wvGIMwRNpS0O",
+  "tags": []
+}
