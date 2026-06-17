@@ -263,6 +263,12 @@ def process_post(
     print("[pipeline] Step 6/6 — Marking post as done…")
     mark_post_done(post.post_id)
 
+    # Clean up local post JSON file if it exists
+    local_post_path = cfg.OUTPUT_DIR.parent / "cache" / "local_posts" / f"{post.post_id}.json"
+    if local_post_path.exists():
+        local_post_path.unlink()
+        print(f"[pipeline] Deleted local post file: {local_post_path}")
+
     print(f"\n[pipeline] ✓ Video ready: {final_video}")
     print(f"[pipeline] ✓ Published to: {published_video}\n")
     return published_video
