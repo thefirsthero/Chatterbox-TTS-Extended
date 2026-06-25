@@ -63,6 +63,38 @@ _GENERIC_HOOKS = [
     "Close your eyes... just kidding, you need to see this post. Listen though.",
 ]
 
+# ── TrueOffMyChest hook templates ───────────────────────────────────────────
+# Emotional, confessional, vulnerable tone — grab attention through empathy.
+
+_TOMC_HOOKS = [
+    "They carried this secret for years. And when they finally told someone, everything changed.",
+    "This confession has {upvotes:,} upvotes for a reason. It's genuinely heartbreaking.",
+    "They needed to get this off their chest. And after hearing it, you'll understand why.",
+    "Some stories stay with you. This is one of them. Listen closely.",
+    "This person has been holding something in for way too long. Here's what happened.",
+    "The weight of this secret was crushing them. Then they told Reddit. And wow.",
+    "Grab a tissue. Because this confession? It's heavy. {upvotes:,} people felt it too.",
+    "You know those moments where someone just needs to be heard? This is one of them.",
+    "They never thought they'd tell anyone this. But here we are. And it's a lot.",
+    "Sometimes the bravest thing you can do is just... say it out loud. They did.",
+]
+
+# ── TIFU hook templates ─────────────────────────────────────────────────────
+# Comedic, light-hearted, embarrassing — hook through curiosity and humour.
+
+_TIFU_HOOKS = [
+    "Today they messed up. And by messed up, I mean EPICALLY. You have to hear this.",
+    "{upvotes:,} people are laughing at this absolute disaster. And honestly? I get it.",
+    "They thought it was a normal day. They were WRONG. So very, very wrong.",
+    "This person made one tiny mistake. And the consequences? Absolutely hilarious.",
+    "Some days you just shouldn't get out of bed. This was one of those days.",
+    "The title says TIFU. But honestly? This is the funniest thing I've read all week.",
+    "You know that feeling when you realize you've made a HUGE mistake? They felt it.",
+    "This story starts with a simple decision and ends in absolute chaos. Settle in.",
+    "They're never going to live this one down. {upvotes:,} people are making sure of it.",
+    "I laughed so hard at this I almost cried. And you're about to understand why.",
+]
+
 # ── Micro-cliffhanger transitions (inserted mid-story for retention) ────────
 _TRANSITIONS = [
     "And here's where it gets interesting.",
@@ -82,12 +114,40 @@ _COMMENT_INTROS = [
 ]
 
 # ── CTAs (call to action — last thing heard) ────────────────────────────────
-_CTAS = [
+
+# AITAH CTAs — verdict/judgment focused (preserved exactly as before)
+_AITAH_CTAS = [
     "What do you think — were they in the right? Drop it in the comments. And follow for more stories like this.",
     "NTA or YTA? Let me know. And if you want more, follow — I post these every day.",
     "Let me know your verdict in the comments. And hit follow — new stories every single day.",
     "Tell me what you think below. And follow so you never miss one of these.",
     "Comment your verdict. Follow for daily Reddit stories. I'll see you in the next one.",
+]
+
+# TrueOffMyChest CTAs — empathetic, supportive tone
+_TOMC_CTAS = [
+    "If this story hit you the way it hit me, let them know in the comments. And follow for more.",
+    "Some stories just need to be heard. Drop a supportive comment. And follow for more like this.",
+    "What would you say to this person? Let me know below. And follow — new stories every day.",
+    "If this resonated with you, you're not alone. Comment your thoughts and follow for more.",
+    "Share your support in the comments. And follow so you never miss a story like this.",
+]
+
+# TIFU CTAs — playful, fun, engagement-focused
+_TIFU_CTAS = [
+    "What's the funniest thing YOU'VE ever done? Tell me in the comments. And follow for more.",
+    "Rate this disaster from 1 to 10 in the comments. And follow — I post these every day.",
+    "Have you ever messed up THIS badly? Let me know. And follow for daily laughs.",
+    "Tell me your most embarrassing moment below. And follow so you never miss a story.",
+    "Drop a laugh emoji if this made your day. Follow for more stories like this.",
+]
+
+# Generic fallback CTAs (used when subreddit has no custom templates)
+_GENERIC_CTAS = [
+    "What do you think? Drop it in the comments. And follow for more stories like this.",
+    "Let me know your thoughts below. And if you want more, follow — I post these every day.",
+    "Comment your take. And hit follow — new stories every single day.",
+    "Tell me what you think. And follow so you never miss one of these.",
 ]
 
 
@@ -101,17 +161,30 @@ class NarrationScript:
 
 
 def _pick_hook(post: RedditPost) -> str:
-    flair = (post.flair or "").lower()
+    """Select a retention hook based on subreddit category and (for AITAH) flair."""
     upvotes = post.upvotes
+    sub = (post.subreddit or "").lower()
 
-    if "not the a-hole" in flair or "nta" in flair:
-        template = random.choice(_NTA_HOOKS)
-    elif "asshole" in flair and "not" not in flair:
-        template = random.choice(_YTA_HOOKS)
-    elif "everyone sucks" in flair or "esh" in flair:
-        template = random.choice(_ESH_HOOKS)
-    elif "no a-holes" in flair or "nah" in flair:
-        template = random.choice(_NAH_HOOKS)
+    # ── AITAH: preserve existing flair-based hook selection EXACTLY ────────
+    if sub in ("amitheasshole", "aitah", "aita"):
+        flair = (post.flair or "").lower()
+        if "not the a-hole" in flair or "nta" in flair:
+            template = random.choice(_NTA_HOOKS)
+        elif "asshole" in flair and "not" not in flair:
+            template = random.choice(_YTA_HOOKS)
+        elif "everyone sucks" in flair or "esh" in flair:
+            template = random.choice(_ESH_HOOKS)
+        elif "no a-holes" in flair or "nah" in flair:
+            template = random.choice(_NAH_HOOKS)
+        else:
+            template = random.choice(_GENERIC_HOOKS)
+    # ── TrueOffMyChest: emotional / confessional hooks ────────────────────
+    elif sub in ("trueoffmychest", "offmychest"):
+        template = random.choice(_TOMC_HOOKS)
+    # ── TIFU: comedic / embarrassing hooks ────────────────────────────────
+    elif sub in ("tifu"):
+        template = random.choice(_TIFU_HOOKS)
+    # ── Unknown / future subreddits: generic hooks ─────────────────────────
     else:
         template = random.choice(_GENERIC_HOOKS)
 
@@ -119,6 +192,20 @@ def _pick_hook(post: RedditPost) -> str:
         return template.format(upvotes=upvotes)
     except KeyError:
         return template
+
+
+def _pick_cta(post: RedditPost) -> str:
+    """Select a CTA based on subreddit category."""
+    sub = (post.subreddit or "").lower()
+
+    if sub in ("amitheasshole", "aitah", "aita"):
+        return random.choice(_AITAH_CTAS)
+    elif sub in ("trueoffmychest", "offmychest"):
+        return random.choice(_TOMC_CTAS)
+    elif sub in ("tifu"):
+        return random.choice(_TIFU_CTAS)
+    else:
+        return random.choice(_GENERIC_CTAS)
 
 
 def _insert_transition(text: str) -> str:
@@ -216,7 +303,7 @@ def generate_script(post: RedditPost) -> NarrationScript:
     comment_text = _format_comments(post.top_comments)
 
     # CTA
-    cta = random.choice(_CTAS)
+    cta = _pick_cta(post)
 
     # Assemble full text for TTS (double newlines = audible pause between chunks)
     parts = [hook, "\n\n", attribution, "\n\n", body]

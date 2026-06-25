@@ -50,6 +50,9 @@ def _setup_args() -> argparse.Namespace:
                    help="Maximum number of videos to produce (default: 3)")
     p.add_argument("--subreddit", default=None,
                    help="Subreddit to scrape (default: from config.py)")
+    p.add_argument("--subreddits", default=None,
+                   help="Comma-separated list of subreddits for multi-subreddit batch mode "
+                        "(e.g. 'AITAH,TrueOffMyChest,TIFU'). Overrides --subreddit.")
     p.add_argument("--sort", choices=["hot", "top", "new"], default="hot",
                    help="Reddit listing to use (default: hot)")
     p.add_argument("--top-time", choices=["day", "week", "month", "year", "all"],
@@ -298,6 +301,26 @@ def main() -> int:
 
         return 0 if produced > 0 or args.dry_run else 1
 
+    # ── Multi-subreddit batch mode ────────────────────────────────────────
+    if args.subreddits:
+        subreddit_list = [s.strip() for s in args.subreddits.split(",") if s.strip()]
+        if not subreddit_list:
+            print("[cli] --subreddits requires at least one subreddit name")
+            return 1
+        from reddit_shorts.pipeline import run_multi_subreddit_batch
+        results = run_multi_subreddit_batch(
+            subreddits=subreddit_list,
+            max_videos_per=args.max,
+            sort=args.sort,
+            top_time=args.top_time,
+            auto_download_gameplay=not args.no_gameplay_download,
+            dry_run=args.dry_run,
+            safety_filter=safety_enabled,
+            blocked_terms=blocked_terms,
+        )
+        total = sum(len(v) for v in results.values())
+        return 0 if total > 0 or args.dry_run else 1
+
     # ── Batch mode (default) ──────────────────────────────────────────────
     from reddit_shorts.pipeline import run_batch
 
@@ -306,7 +329,7 @@ def main() -> int:
         subreddit=subreddit or cfg.SUBREDDIT,
         sort=args.sort,
         top_time=args.top_time,
-        min_upvotes=args.min_upvotes if args.min_upvotes is not None else cfg.MIN_UPVOTES,
+        min_upvotes=args.min_upvotes if args.min_upvotes is not None else cfg.get_min_upvotes(subreddit or cfg.SUBREDDIT),
         min_body_chars=args.min_body_chars if args.min_body_chars is not None else cfg.MIN_BODY_CHARS,
         max_body_chars=args.max_body_chars if args.max_body_chars is not None else cfg.MAX_BODY_CHARS,
         auto_download_gameplay=not args.no_gameplay_download,

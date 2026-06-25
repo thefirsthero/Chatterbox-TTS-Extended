@@ -34,7 +34,11 @@ from reddit_shorts.subtitle_gen import SubtitleSpec, generate_ass
 from reddit_shorts.transcription import transcribe_word_timestamps
 
 
-def _post_output_dir(post_id: str) -> Path:
+def _post_output_dir(post_id: str, subreddit: str = "") -> Path:
+    """Return the per-post output directory, scoped under the subreddit folder."""
+    if subreddit:
+        sub_dir = subreddit.lower().replace(" ", "_")
+        return cfg.OUTPUT_DIR / sub_dir / post_id
     return cfg.OUTPUT_DIR / post_id
 
 
@@ -75,23 +79,28 @@ def _append_safety_skip_log(post: RedditPost, matched_terms: list[str]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _publish_final_video(post_id: str, source_video: Path) -> Path:
-    """Copy the per-post render into the canonical videos destination."""
-    dest_dir = cfg.FINAL_VIDEOS_DIR
+def _publish_final_video(post_id: str, source_video: Path, subreddit: str = "") -> Path:
+    """Copy the per-post render into the canonical videos destination, organized by subreddit and date."""
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    if subreddit:
+        safe_sub = subreddit.lower().replace(" ", "_")
+        dest_dir = cfg.FINAL_VIDEOS_DIR / safe_sub / date_str
+    else:
+        dest_dir = cfg.FINAL_VIDEOS_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
-    meta_path = _post_output_dir(post_id) / "post_meta.json"
+    meta_path = _post_output_dir(post_id, subreddit) / "post_meta.json"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    subreddit = "subreddit"
+    resolved_subreddit = subreddit or "subreddit"
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             processed_at = meta.get("processed_at")
             if processed_at:
                 timestamp = datetime.fromisoformat(processed_at).strftime("%Y%m%d_%H%M%S")
-            subreddit = str(meta.get("subreddit") or subreddit)
+            resolved_subreddit = str(meta.get("subreddit") or resolved_subreddit)
         except Exception:
             pass
-    safe_subreddit = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in subreddit).strip("-") or "subreddit"
+    safe_subreddit = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in resolved_subreddit).strip("-") or "subreddit"
     published_path = dest_dir / f"{timestamp}__{safe_subreddit}__{post_id}.mp4"
     shutil.copy2(source_video, published_path)
     return published_path
@@ -111,12 +120,12 @@ def process_post(
     
     Can be called from process_batch_parallel() for multi-core processing.
     """
-    out_dir = _post_output_dir(post.post_id)
+    out_dir = _post_output_dir(post.post_id, post.subreddit)
     final_video = out_dir / "video.mp4"
 
     if is_post_done(post.post_id):
         if final_video.exists():
-            published_video = _publish_final_video(post.post_id, final_video)
+            published_video = _publish_final_video(post.post_id, final_video, post.subreddit)
             print(f"[pipeline] Skipping {post.post_id} — already processed")
             print(f"[pipeline] Published: {published_video}")
             return published_video
@@ -124,7 +133,7 @@ def process_post(
         return None
 
     if skip_if_exists and final_video.exists():
-        published_video = _publish_final_video(post.post_id, final_video)
+        published_video = _publish_final_video(post.post_id, final_video, post.subreddit)
         print(f"[pipeline] Skipping {post.post_id} — video already exists")
         print(f"[pipeline] Published: {published_video}")
         return published_video
@@ -255,19 +264,24 @@ def process_post(
         card_height_px=card_height,
         hook_text=script.hook,
         gameplay_clips=gameplay_clips,
+        subreddit=post.subreddit,
     )
 
-    published_video = _publish_final_video(post.post_id, final_video)
+    published_video = _publish_final_video(post.post_id, final_video, post.subreddit)
 
     # ── Step 6: Mark done ────────────────────────────────────────────────────
     print("[pipeline] Step 6/6 — Marking post as done…")
     mark_post_done(post.post_id)
 
-    # Clean up local post JSON file if it exists
-    local_post_path = cfg.OUTPUT_DIR.parent / "cache" / "local_posts" / f"{post.post_id}.json"
-    if local_post_path.exists():
-        local_post_path.unlink()
-        print(f"[pipeline] Deleted local post file: {local_post_path}")
+    # Clean up local post JSON file if it exists (check both unscoped and scoped directories)
+    for check_dir in [
+        cfg.OUTPUT_DIR.parent / "cache" / "local_posts",
+        cfg.OUTPUT_DIR.parent / "cache" / "local_posts" / post.subreddit.lower().replace(" ", "_"),
+    ]:
+        local_post_path = check_dir / f"{post.post_id}.json"
+        if local_post_path.exists():
+            local_post_path.unlink()
+            print(f"[pipeline] Deleted local post file: {local_post_path}")
 
     print(f"\n[pipeline] ✓ Video ready: {final_video}")
     print(f"[pipeline] ✓ Published to: {published_video}\n")
@@ -329,6 +343,7 @@ def run_batch(
             min_body_chars=min_body_chars,
             max_body_chars=max_body_chars,
             desired_count=max_videos,
+            flair_whitelist=cfg.get_flair_whitelist(subreddit),
         )
         if not posts:
             print("[pipeline] No posts passed the filters. Try changing sort/subreddit/min_upvotes.")
@@ -407,7 +422,7 @@ def run_batch(
                     print(f"[pipeline] [{completed}/{len(posts_to_process)}] ✗ {post.post_id}")
                     print(f"[pipeline]   Error: {exc}")
                     errors.append(msg)
-                    err_path = _post_output_dir(post.post_id) / "error.log"
+                    err_path = _post_output_dir(post.post_id, post.subreddit) / "error.log"
                     err_path.parent.mkdir(parents=True, exist_ok=True)
                     err_path.write_text(traceback.format_exc(), encoding="utf-8")
     else:
@@ -429,7 +444,7 @@ def run_batch(
                 print(f"[pipeline] ERROR: {msg}")
                 traceback.print_exc()
                 errors.append(msg)
-                err_path = _post_output_dir(post.post_id) / "error.log"
+                err_path = _post_output_dir(post.post_id, post.subreddit) / "error.log"
                 err_path.parent.mkdir(parents=True, exist_ok=True)
                 err_path.write_text(traceback.format_exc(), encoding="utf-8")
 
@@ -440,3 +455,90 @@ def run_batch(
     for p in produced:
         print(f"  -> {p}")
     return produced
+
+
+def run_multi_subreddit_batch(
+    subreddits: list[str] | None = None,
+    max_videos_per: int = 3,
+    sort: str = "hot",
+    top_time: str = "week",
+    auto_download_gameplay: bool = True,
+    dry_run: bool = False,
+    safety_filter: bool = True,
+    blocked_terms: list[str] | None = None,
+) -> dict[str, list[Path]]:
+    """
+    Run the pipeline across multiple subreddits in sequence.
+
+    Parameters
+    ----------
+    subreddits           : List of subreddit names. If None, uses cfg.ENABLED_SUBREDDITS.
+    max_videos_per       : Maximum videos per subreddit.
+    sort                 : Reddit listing sort order.
+    top_time             : Time filter for top sorting.
+    auto_download_gameplay: Download gameplay footage if none found.
+    dry_run              : If True, print what would be done without generating.
+    safety_filter        : If True, skip posts matching blocked terms.
+    blocked_terms        : Optional override for blocked keywords.
+
+    Returns
+    -------
+    dict[str, list[Path]]
+        Mapping of subreddit → list of produced video paths.
+    """
+    if subreddits is None:
+        subreddits = cfg.ENABLED_SUBREDDITS
+
+    if not subreddits:
+        print("[pipeline] No subreddits configured. Check SUBREDDIT_CONFIGS in config.py.")
+        return {}
+
+    print(f"[pipeline] Multi-subreddit batch: {len(subreddits)} subreddit(s)")
+    for sub in subreddits:
+        cat = cfg.get_subreddit_category(sub)
+        print(f"  • r/{sub}  ({cat})")
+
+    # Pre-load gameplay clips once for all subreddits
+    gameplay_clips = None
+    if not dry_run:
+        gameplay_clips = ensure_gameplay_footage(auto_download=auto_download_gameplay)
+
+    all_results: dict[str, list[Path]] = {}
+    total_produced = 0
+
+    for sub in subreddits:
+        cfg_entry = cfg.get_subreddit_config(sub)
+        if not cfg_entry.get("enabled", True):
+            print(f"\n[pipeline] Skipping r/{sub} — disabled in config")
+            continue
+
+        print(f"\n{'=' * 60}")
+        print(f"[pipeline] Processing r/{sub}")
+        print(f"{'=' * 60}")
+
+        try:
+            results = run_batch(
+                max_videos=max_videos_per,
+                subreddit=sub,
+                sort=sort,
+                top_time=top_time,
+                min_upvotes=cfg.MIN_UPVOTES,
+                min_body_chars=cfg.MIN_BODY_CHARS,
+                max_body_chars=cfg.MAX_BODY_CHARS,
+                auto_download_gameplay=False,  # already loaded
+                gameplay_clips=gameplay_clips,
+                dry_run=dry_run,
+                safety_filter=safety_filter,
+                blocked_terms=blocked_terms,
+            )
+            all_results[sub] = results
+            total_produced += len(results)
+        except Exception as exc:
+            print(f"[pipeline] Error processing r/{sub}: {exc}")
+            traceback.print_exc()
+            all_results[sub] = []
+
+    print(f"\n[pipeline] Multi-subreddit batch complete: {total_produced} total video(s)")
+    for sub, videos in all_results.items():
+        print(f"  r/{sub}: {len(videos)} video(s)")
+    return all_results

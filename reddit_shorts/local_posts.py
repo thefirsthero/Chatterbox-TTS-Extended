@@ -23,10 +23,15 @@ from reddit_shorts import config as cfg
 LOCAL_POSTS_DIR = cfg.OUTPUT_DIR.parent / "cache" / "local_posts"
 
 
-def get_local_posts_dir() -> Path:
-    """Return path to local posts storage directory."""
-    LOCAL_POSTS_DIR.mkdir(parents=True, exist_ok=True)
-    return LOCAL_POSTS_DIR
+def get_local_posts_dir(subreddit: str = "") -> Path:
+    """Return path to local posts storage directory, optionally scoped per subreddit."""
+    if subreddit:
+        sub_dir = subreddit.lower().replace(" ", "_")
+        dir_path = LOCAL_POSTS_DIR / sub_dir
+    else:
+        dir_path = LOCAL_POSTS_DIR
+    dir_path.mkdir(parents=True, exist_ok=True)
+    return dir_path
 
 
 def save_post(
@@ -71,7 +76,7 @@ def save_post(
         top_comments=[],
     )
     
-    posts_dir = get_local_posts_dir()
+    posts_dir = get_local_posts_dir(subreddit)
     file_path = posts_dir / f"{post_id}.json"
     
     with file_path.open("w", encoding="utf-8") as f:
@@ -81,17 +86,18 @@ def save_post(
     return file_path
 
 
-def load_local_posts(limit: int = None) -> list[RedditPost]:
+def load_local_posts(limit: int = None, subreddit: str = "") -> list[RedditPost]:
     """
     Load all posts from local JSON files.
-    
+
     Args:
         limit: Max posts to load (None = all)
-    
+        subreddit: Optional subreddit scope (loads from subreddit-specific directory)
+
     Returns:
         List of RedditPost objects
     """
-    posts_dir = get_local_posts_dir()
+    posts_dir = get_local_posts_dir(subreddit)
     
     if not posts_dir.exists():
         return []

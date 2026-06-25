@@ -145,6 +145,7 @@ def compose_video(
     card_height_px: int,
     hook_text: Optional[str] = None,
     gameplay_clips: Optional[list[Path]] = None,
+    subreddit: str = "",
 ) -> Path:
     """
     Compose the final video and save to *output_path*.
@@ -158,6 +159,7 @@ def compose_video(
     card_height_px   : Height of card_png in pixels
     hook_text        : First hook sentence (drawn as large overlay text, first 3 s)
     gameplay_clips   : Pre-resolved list of background clips (auto-discovered if None)
+    subreddit        : Subreddit name for dynamic branding (empty = use config default)
     """
     audio_path = Path(audio_path)
     card_png = Path(card_png)
@@ -239,7 +241,8 @@ def compose_video(
         )
 
         # ── Branding strip (top) ──────────────────────────────────────────
-        branding = cfg.BRANDING_TEXT.replace("'", "\\'")
+        branding = cfg.branding_text(subreddit) if subreddit else cfg.BRANDING_TEXT
+        branding = branding.replace("'", "\\'")
         # For cross-platform safety use a font path without backslashes
         font_path_ff = cfg.FONT_BOLD.replace("\\", "/").replace(":", "\\:")
         branding_filter = (

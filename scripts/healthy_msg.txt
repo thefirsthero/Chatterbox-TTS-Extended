@@ -1,0 +1,10 @@
+﻿= `📊 **Weekly Queue Report**
+
+Queue is healthy! 👍
+
+• 🆕 **${$json.new_count}** videos available
+• ✅ ${$json.done_count} posted
+• ❌ ${$json.failed_count} failed
+• 📦 ${$json.total} total tracked
+
+Next post: Tomorrow at 19:00 SAST`

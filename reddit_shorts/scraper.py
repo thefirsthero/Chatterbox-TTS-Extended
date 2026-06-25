@@ -24,6 +24,11 @@ from urllib.parse import urlparse
 from typing import Optional
 
 import praw
+
+# Sentinel to distinguish "caller didn't pass flair_whitelist" (use default)
+# from "caller passed None" (no filter)
+_UNSET_FLAIR = object()
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -1007,7 +1012,7 @@ def scrape_posts(
     min_body_chars: int = cfg.MIN_BODY_CHARS,
     max_body_chars: int = cfg.MAX_BODY_CHARS,
     desired_count: int | None = None,
-    flair_whitelist: Optional[list[str]] = None,
+    flair_whitelist: Optional[list[str]] = _UNSET_FLAIR,
     skip_done: bool = True,
     sort: str = "hot",          # "hot" | "top" | "new"
     top_time: str = "week",     # only used when sort="top"
@@ -1021,7 +1026,7 @@ def scrape_posts(
     - Body length in range → long enough for a real story, short enough for Shorts
     - Not NSFW → platform-safe
     """
-    if flair_whitelist is None:
+    if flair_whitelist is _UNSET_FLAIR:
         flair_whitelist = cfg.FLAIR_WHITELIST
 
     query = _scrape_cache_query(

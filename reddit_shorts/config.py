@@ -17,8 +17,93 @@ TEMP_DIR = ROOT / "temp" / "shorts"
 VOICE_PROFILE = None
 DONE_POSTS_FILE = OUTPUT_DIR / "done_posts.txt"
 
+
+def subreddit_output_dir(subreddit: str) -> Path:
+    """Return the per-subreddit output directory (e.g. output/shorts/aitah/)."""
+    safe = subreddit.lower().replace(" ", "_")
+    return OUTPUT_DIR / safe
+
+
+def subreddit_final_dir(subreddit: str) -> Path:
+    """Return the per-subreddit final videos directory."""
+    safe = subreddit.lower().replace(" ", "_")
+    return FINAL_VIDEOS_DIR / safe
+
 # ── Reddit scraping ────────────────────────────────────────────────────────
-SUBREDDIT = "AmItheAsshole"
+SUBREDDIT = "AmItheAsshole"    # Default / backward-compat single subreddit
+
+# ── Multi-subreddit configuration ───────────────────────────────────────────
+# Each entry defines scraping and filtering rules for a subreddit.
+# "enabled": False means the subreddit is skipped in multi-subreddit runs.
+# "flair_whitelist": None means no flair filter (accept all flairs).
+#
+# Adding a new subreddit requires ONLY a new entry here + optional hook/CTA
+# templates in script_writer.py.  Everything else is derived automatically.
+SUBREDDIT_CONFIGS = {
+    "AmItheAsshole": {
+        "enabled": True,
+        "flair_whitelist": [
+            "Not the A-hole",
+            "Asshole",
+            "Everyone Sucks",
+            "No A-holes here",
+        ],
+        "category": "Drama / Moral dilemmas / Conflict",
+        "min_upvotes": 1_000,
+    },
+    "TrueOffMyChest": {
+        "enabled": True,
+        "flair_whitelist": None,  # No flair filter — emotional stories span all flairs
+        "category": "Emotional stories / Confessions / Personal struggles",
+        "min_upvotes": 250,
+    },
+    "TIFU": {
+        "enabled": True,
+        "flair_whitelist": None,  # No flair filter — comedy spans all flairs
+        "category": "Comedy / Embarrassing situations / Funny mistakes",
+        "min_upvotes": 250,
+    },
+}
+
+# Derived: list of subreddit names that are both configured AND enabled.
+ENABLED_SUBREDDITS: list[str] = [
+    name for name, cfg in SUBREDDIT_CONFIGS.items() if cfg.get("enabled", False)
+]
+
+
+def _find_config(subreddit: str) -> dict | None:
+    """Case-insensitive lookup in SUBREDDIT_CONFIGS."""
+    for name, entry in SUBREDDIT_CONFIGS.items():
+        if name.lower() == subreddit.lower():
+            return entry
+    return None
+
+
+def get_subreddit_config(subreddit: str) -> dict:
+    """Return the SUBREDDIT_CONFIGS entry for *subreddit*, or an empty dict."""
+    return _find_config(subreddit) or {}
+
+
+def get_flair_whitelist(subreddit: str) -> list[str] | None:
+    """Return the flair whitelist for *subreddit*, falling back to global."""
+    entry = _find_config(subreddit)
+    if entry is not None and "flair_whitelist" in entry:
+        return entry["flair_whitelist"]
+    return FLAIR_WHITELIST  # backward-compat global default
+
+
+def get_min_upvotes(subreddit: str) -> int:
+    """Return the min_upvotes for *subreddit*, falling back to global."""
+    entry = _find_config(subreddit)
+    if entry is not None:
+        return entry.get("min_upvotes", MIN_UPVOTES)
+    return MIN_UPVOTES
+
+
+def get_subreddit_category(subreddit: str) -> str:
+    """Return a human-readable category description for *subreddit*."""
+    entry = _find_config(subreddit) or {}
+    return entry.get("category", "General")
 
 # Only include posts that are popular, resolved, and substantial enough to narrate
 POST_LIMIT_FETCH = 75          # How many hot/top posts to pull before filtering
@@ -27,6 +112,7 @@ MIN_BODY_CHARS = 450           # Too short = boring short
 MAX_BODY_CHARS = 1_800         # Server is more permissive for pipeline automation
 
 # Only process posts with one of these resolved flairs (None = no filter)
+# Kept for backward-compat; prefer SUBREDDIT_CONFIGS[subreddit]["flair_whitelist"].
 FLAIR_WHITELIST = [
     "Not the A-hole",
     "Asshole",
@@ -149,7 +235,12 @@ PROGRESS_BAR_H = 12
 PROGRESS_BAR_COLOR = "ff4500"  # Reddit orange
 
 # Branding strip (very top of frame)
-BRANDING_TEXT = f"r/{SUBREDDIT}  ·  Reddit Storytime"
+# Dynamic — call branding_text(subreddit) to get the per-subreddit string.
+def branding_text(subreddit: str) -> str:
+    """Return the top-of-frame branding strip for a subreddit."""
+    return f"r/{subreddit}  ·  Reddit Storytime"
+
+BRANDING_TEXT = branding_text(SUBREDDIT)  # backward-compat literal
 BRANDING_FONT_SIZE = 30
 BRANDING_Y = 52
 
