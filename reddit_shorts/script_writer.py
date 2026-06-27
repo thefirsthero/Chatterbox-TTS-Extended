@@ -320,3 +320,157 @@ def generate_script(post: RedditPost) -> NarrationScript:
         cta=cta,
         full_text=full_text,
     )
+
+
+# ── Part-splitting support ─────────────────────────────────────────────────
+# Instagram via Postiz enforces 300 s limit.  Posts exceeding this are split
+# into Part 1 / Part 2 with logical sentence-boundary breaks so the two
+# videos appear sequentially when sorted alphabetically in a drive.
+
+_STAY_TUNED_OUTROS = [
+    "Stay tuned for Part 2.",
+    "But wait — there's more.  Part 2 is coming right after this.",
+    "And that's just the first half.  Stay tuned for Part 2.",
+    "This story isn't over.  Part 2 is next — stay tuned.",
+]
+
+
+def _split_body_at_sentence(body: str, target_chars: int) -> tuple[str, str]:
+    """Split *body* at the nearest sentence boundary to *target_chars*.
+
+    Prefers `. ! ?` followed by whitespace.  Falls back to paragraph
+    breaks, then word boundaries.  Never produces a fragment shorter
+    than 150 chars.
+    """
+    if len(body) <= target_chars:
+        return body, ""
+
+    # Find sentence boundaries: . ! ? + space / newline
+    boundary_pattern = re.compile(r'(?<=[.!?])\s+')
+    best_pos = target_chars
+    best_dist = float('inf')
+
+    for m in boundary_pattern.finditer(body):
+        pos = m.start() + 1  # right after the punctuation
+        dist = abs(pos - target_chars)
+        if dist < best_dist:
+            best_dist = dist
+            best_pos = pos
+
+    # Paragraph break fallback
+    if best_dist > 500:
+        lo = max(0, target_chars - 400)
+        hi = min(len(body), target_chars + 400)
+        para_pos = body.rfind('\n\n', lo, hi)
+        if para_pos > 0:
+            best_pos = para_pos + 2
+
+    # Word-boundary last resort
+    if best_pos <= 100 or best_pos >= len(body) - 100:
+        space_pos = body.rfind(' ', 0, min(target_chars + 200, len(body)))
+        if space_pos > 100:
+            best_pos = space_pos
+
+    part1 = body[:best_pos].strip()
+    part2 = body[best_pos:].strip()
+
+    if len(part1) < 150 or len(part2) < 150:
+        return body, ""
+
+    return part1, part2
+
+
+def generate_split_scripts(
+    post: RedditPost,
+    max_duration_s: int = 300,
+) -> list[NarrationScript]:
+    """Generate Part 1 + Part 2 scripts for a post exceeding the time limit.
+
+    Part 1 — hook with "Part 1" suffix, first body half, stay-tuned outro.
+    Part 2 — "Continuing" hook, second body half, comments, CTA.
+
+    Returns 1–2 scripts (1 if the body is too short to split meaningfully).
+    """
+    hook = _pick_hook(post)
+    attribution = (
+        f'This was posted to r/{post.subreddit} by user {post.author}, '
+        f'with {post.upvotes:,} upvotes.'
+    )
+    body = _format_body(post)
+    comment_text = _format_comments(post.top_comments)
+    cta = _pick_cta(post)
+
+    # Char budget for Part 1's *body* (~10 chars/s TTS estimate).
+    # Part 1 = hook("Part 1") + attribution + body_p1 + outro + newlines.
+    # We must subtract the known overhead to find the body-only budget.
+    part1_hook = hook + " — Part 1"
+    stay_tuned = random.choice(_STAY_TUNED_OUTROS)
+    overhead = len(part1_hook) + len(attribution) + len(stay_tuned) + 30  # +30 for \n\n spacing
+    body_budget = (max_duration_s * 10) - overhead
+
+    body_p1, body_p2 = _split_body_at_sentence(body, body_budget)
+
+    # If the body fits entirely in Part 1 but the full script (with comments
+    # + CTA) exceeds the limit, still split: put the whole body in Part 1
+    # and comments + CTA in Part 2.
+    if not body_p2:
+        # Check: can we at least fit body alone in Part 1?
+        # Estimate Part 1 total: hook + attr + body + outro
+        part1_est = overhead + len(body)
+        if part1_est <= max_duration_s * 10:
+            # Body fits in Part 1.  Move comments + CTA to Part 2.
+            # If there are no comments/CTA to move, we truly can't split.
+            if not comment_text and not cta:
+                full = "".join([
+                    hook, "\n\n", attribution, "\n\n", body,
+                    "\n\n", cta,
+                ])
+                return [NarrationScript(
+                    hook=hook, body=body, comment_section="",
+                    cta=cta, full_text=full,
+                )]
+            # Body goes entirely in Part 1; comments + CTA → Part 2
+            body_p1 = body
+            body_p2 = ""  # Part 2 has no story body
+        else:
+            # Even the bare body is too long for Part 1 — can't split
+            full = "".join([
+                hook, "\n\n", attribution, "\n\n", body,
+                ("\n\n" + comment_text) if comment_text else "",
+                "\n\n", cta,
+            ])
+            return [NarrationScript(
+                hook=hook, body=body, comment_section=comment_text,
+                cta=cta, full_text=full,
+            )]
+
+    # ── Part 1 ──────────────────────────────────────────────────────────
+    part1_full = "".join([
+        part1_hook, "\n\n", attribution, "\n\n", body_p1,
+        "\n\n", stay_tuned,
+    ])
+
+    part1 = NarrationScript(
+        hook=part1_hook, body=body_p1,
+        comment_section="", cta=stay_tuned,
+        full_text=part1_full,
+    )
+
+    # ── Part 2 ──────────────────────────────────────────────────────────
+    part2_hook = f"Part 2 — Continuing: {post.title[:80]}"
+    part2_attribution = f"Continued from r/{post.subreddit}..."
+
+    parts: list[str] = [part2_hook, "\n\n", part2_attribution]
+    if body_p2:
+        parts.extend(["\n\n", body_p2])
+    if comment_text:
+        parts.extend(["\n\n", comment_text])
+    parts.extend(["\n\n", cta])
+
+    part2 = NarrationScript(
+        hook=part2_hook, body=body_p2,
+        comment_section=comment_text, cta=cta,
+        full_text="".join(parts),
+    )
+
+    return [part1, part2]

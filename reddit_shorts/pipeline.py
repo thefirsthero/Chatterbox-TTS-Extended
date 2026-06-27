@@ -42,7 +42,7 @@ def _post_output_dir(post_id: str, subreddit: str = "") -> Path:
     return cfg.OUTPUT_DIR / post_id
 
 
-def _process_post_worker(args_tuple: tuple) -> Optional[Path]:
+def _process_post_worker(args_tuple: tuple) -> list[Path]:
     """
     Worker function for ProcessPoolExecutor parallel processing.
     
@@ -60,7 +60,7 @@ def _process_post_worker(args_tuple: tuple) -> Optional[Path]:
     except Exception as exc:
         print(f"[parallel] Error processing {post.post_id}: {exc}")
         traceback.print_exc()
-        return None
+        return []
 
 
 def _append_safety_skip_log(post: RedditPost, matched_terms: list[str]) -> None:
@@ -79,7 +79,7 @@ def _append_safety_skip_log(post: RedditPost, matched_terms: list[str]) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _publish_final_video(post_id: str, source_video: Path, subreddit: str = "") -> Path:
+def _publish_final_video(post_id: str, source_video: Path, subreddit: str = "", part: Optional[int] = None) -> Path:
     """Copy the per-post render into the canonical videos destination, organized by subreddit and date."""
     date_str = datetime.now().strftime("%Y-%m-%d")
     if subreddit:
@@ -101,7 +101,10 @@ def _publish_final_video(post_id: str, source_video: Path, subreddit: str = "") 
         except Exception:
             pass
     safe_subreddit = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in resolved_subreddit).strip("-") or "subreddit"
-    published_path = dest_dir / f"{timestamp}__{safe_subreddit}__{post_id}.mp4"
+    if part is not None:
+        published_path = dest_dir / f"{timestamp}__{safe_subreddit}__{post_id}__part{part}.mp4"
+    else:
+        published_path = dest_dir / f"{timestamp}__{safe_subreddit}__{post_id}.mp4"
     shutil.copy2(source_video, published_path)
     return published_path
 
@@ -112,13 +115,12 @@ def process_post(
     skip_if_exists: bool = True,
     safety_filter: bool = True,
     blocked_terms: Optional[list[str]] = None,
-) -> Optional[Path]:
+) -> list[Path]:
     """
     Run the full pipeline for a single post.
 
-    Returns the path to the final MP4, or None if skipped/failed.
-    
-    Can be called from process_batch_parallel() for multi-core processing.
+    Returns a list of published MP4 paths (normally 1; may be 2 when a long
+    post is split into Part 1 / Part 2).  Empty list = skipped or failed.
     """
     out_dir = _post_output_dir(post.post_id, post.subreddit)
     final_video = out_dir / "video.mp4"
@@ -128,15 +130,15 @@ def process_post(
             published_video = _publish_final_video(post.post_id, final_video, post.subreddit)
             print(f"[pipeline] Skipping {post.post_id} — already processed")
             print(f"[pipeline] Published: {published_video}")
-            return published_video
+            return [published_video]
         print(f"[pipeline] Skipping {post.post_id} — already processed (done list)")
-        return None
+        return []
 
     if skip_if_exists and final_video.exists():
         published_video = _publish_final_video(post.post_id, final_video, post.subreddit)
         print(f"[pipeline] Skipping {post.post_id} — video already exists")
         print(f"[pipeline] Published: {published_video}")
-        return published_video
+        return [published_video]
 
     if safety_filter:
         terms = blocked_terms if blocked_terms is not None else cfg.SAFETY_BLOCKED_TERMS
@@ -147,7 +149,7 @@ def process_post(
                 + ", ".join(decision.matched_terms)
             )
             _append_safety_skip_log(post, decision.matched_terms)
-            return None
+            return []
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -184,29 +186,95 @@ def process_post(
     script_path.write_text(script.full_text, encoding="utf-8")
     print(f"[pipeline] Script: {len(script.full_text)} chars")
 
-    # ── Step 1b: Validate estimated duration ────────────────────────────────
-    from reddit_shorts.tts_narrator import (
-        generate_narration, 
-        get_audio_duration, 
-        estimate_narration_duration
-    )
-    
+    # ── Step 1b: Validate estimated duration / split if needed ───────────────
+    from reddit_shorts.tts_narrator import estimate_narration_duration
+    from reddit_shorts.script_writer import generate_split_scripts
+
     estimated_duration = estimate_narration_duration(script.full_text)
     print(f"[pipeline] Estimated duration: {estimated_duration:.1f}s")
-    
-    if estimated_duration > cfg.MAX_VIDEO_DURATION_S:
+
+    max_dur = cfg.MAX_VIDEO_DURATION_S
+
+    # Decide: single video or split into parts
+    if estimated_duration > max_dur and cfg.ENABLE_VIDEO_SPLITTING:
         print(
-            f"[pipeline] SKIPPING {post.post_id} — estimated duration {estimated_duration:.0f}s "
-            f"exceeds maximum {cfg.MAX_VIDEO_DURATION_S}s"
+            f"[pipeline] Duration {estimated_duration:.0f}s > {max_dur}s limit — "
+            f"splitting into Part 1 / Part 2"
         )
-        return None
+        scripts = generate_split_scripts(post, max_dur)
+        print(
+            f"[pipeline] Split into {len(scripts)} part(s): "
+            f"{', '.join(str(len(s.full_text)) + ' chars' for s in scripts)}"
+        )
+    else:
+        if estimated_duration > max_dur:
+            print(
+                f"[pipeline] SKIPPING {post.post_id} — estimated duration "
+                f"{estimated_duration:.0f}s exceeds maximum {max_dur}s "
+                f"(splitting disabled)"
+            )
+            return []
+        scripts = [script]
 
-    # ── Step 2: Generate ASMR audio ─────────────────────────────────────────
+    # ── Render each part ────────────────────────────────────────────────────
+    results: list[Path] = []
+    total_parts = len(scripts)
+    for i, part_script in enumerate(scripts, 1):
+        if total_parts > 1:
+            print(f"\n{'─' * 40}")
+            print(f"[pipeline] Rendering Part {i} of {total_parts}")
+            print(f"{'─' * 40}")
+            # Save part-specific script
+            part_suffix = f"_part{i}"
+            (out_dir / f"script{part_suffix}.txt").write_text(
+                part_script.full_text, encoding="utf-8"
+            )
+            print(f"[pipeline] Part {i} script: {len(part_script.full_text)} chars")
+
+        video = _render_video_from_script(
+            post, part_script, out_dir, gameplay_clips,
+            part_num=i if total_parts > 1 else None,
+        )
+        if video:
+            results.append(video)
+
+    # ── Step 6: Mark done (once for all parts) ──────────────────────────────
+    if results:
+        print("[pipeline] Step 6/6 — Marking post as done…")
+        mark_post_done(post.post_id)
+        # Clean up local post JSON
+        for check_dir in [
+            cfg.OUTPUT_DIR.parent / "cache" / "local_posts",
+            cfg.OUTPUT_DIR.parent / "cache" / "local_posts" / post.subreddit.lower().replace(" ", "_"),
+        ]:
+            local_post_path = check_dir / f"{post.post_id}.json"
+            if local_post_path.exists():
+                local_post_path.unlink()
+                print(f"[pipeline] Deleted local post file: {local_post_path}")
+
+    return results
+
+def _render_video_from_script(
+    post: RedditPost,
+    script,
+    out_dir: Path,
+    gameplay_clips,
+    part_num: Optional[int] = None,
+) -> Optional[Path]:
+    """Execute Steps 2–6 for a single script (may be a part of a split post).
+
+    Returns the published video path, or None on failure.
+    """
+    from reddit_shorts.tts_narrator import (
+        generate_narration,
+        get_audio_duration,
+    )
+    from reddit_shorts.video_composer import compose_video
+
+    # ── Step 2: Audio ──────────────────────────────────────────────────
     print("[pipeline] Step 2/6 — Generating narration audio…")
-    # Lazy import keeps CLI dry-runs fast and avoids heavyweight model imports
-    # unless we actually render audio/video.
-
-    audio_wav = out_dir / "audio.wav"
+    suffix = f"_part{part_num}" if part_num else ""
+    audio_wav = out_dir / f"audio{suffix}.wav"
     generate_narration(
         text=script.full_text,
         output_wav=audio_wav,
@@ -215,46 +283,32 @@ def process_post(
     audio_duration = get_audio_duration(audio_wav)
     print(f"[pipeline] Audio duration: {audio_duration:.1f}s")
 
-    # Guard: Hard limit on video duration
-    if audio_duration > cfg.MAX_VIDEO_DURATION_S:
-        print(
-            f"[pipeline] SKIPPING {post.post_id} — actual duration {audio_duration:.0f}s "
-            f"exceeds maximum {cfg.MAX_VIDEO_DURATION_S}s"
-        )
-        return None
-
-    # Warn if very short
     if audio_duration < 40:
-        print(f"[pipeline] WARNING: Audio is very short ({audio_duration:.0f}s). Post may be too brief.")
+        print(f"[pipeline] WARNING: Audio is very short ({audio_duration:.0f}s).")
 
-    # ── Step 3: Render Reddit post card ─────────────────────────────────────
+    # ── Step 3: Card ───────────────────────────────────────────────────
     print("[pipeline] Step 3/6 — Rendering Reddit card…")
-    card_png = out_dir / "reddit_card.png"
+    card_png = out_dir / f"reddit_card{suffix}.png"
     card_height = render_post_card(post, card_png)
 
-    hook_overlay_png = out_dir / "hook_overlay.png"
+    hook_overlay_png = out_dir / f"hook_overlay{suffix}.png"
     render_hook_overlay(script.hook, hook_overlay_png)
 
-    # ── Step 4: Generate subtitles ───────────────────────────────────────────
+    # ── Step 4: Subtitles ──────────────────────────────────────────────
     print("[pipeline] Step 4/6 — Generating subtitles…")
-    subtitle_ass = out_dir / "subtitles.ass"
-    subtitle_body_text = script.full_text
-    # Avoid prompt-guided timestamp bias; raw ASR timings are more reliable.
+    subtitle_ass = out_dir / f"subtitles{suffix}.ass"
     timed_words = transcribe_word_timestamps(audio_wav)
     spec = SubtitleSpec(
         hook_text=script.hook,
-        body_text=subtitle_body_text,
+        body_text=script.full_text,
         audio_duration_s=audio_duration,
         timed_words=timed_words,
     )
     generate_ass(spec, subtitle_ass)
 
-    # ── Step 5: Compose video ────────────────────────────────────────────────
+    # ── Step 5: Compose ────────────────────────────────────────────────
     print("[pipeline] Step 5/6 — Composing video…")
-    from reddit_shorts.video_composer import compose_video
-
-    if gameplay_clips is None:
-        gameplay_clips = ensure_gameplay_footage()
+    final_video = out_dir / f"video{suffix}.mp4"
 
     compose_video(
         audio_path=audio_wav,
@@ -267,21 +321,9 @@ def process_post(
         subreddit=post.subreddit,
     )
 
-    published_video = _publish_final_video(post.post_id, final_video, post.subreddit)
-
-    # ── Step 6: Mark done ────────────────────────────────────────────────────
-    print("[pipeline] Step 6/6 — Marking post as done…")
-    mark_post_done(post.post_id)
-
-    # Clean up local post JSON file if it exists (check both unscoped and scoped directories)
-    for check_dir in [
-        cfg.OUTPUT_DIR.parent / "cache" / "local_posts",
-        cfg.OUTPUT_DIR.parent / "cache" / "local_posts" / post.subreddit.lower().replace(" ", "_"),
-    ]:
-        local_post_path = check_dir / f"{post.post_id}.json"
-        if local_post_path.exists():
-            local_post_path.unlink()
-            print(f"[pipeline] Deleted local post file: {local_post_path}")
+    published_video = _publish_final_video(
+        post.post_id, final_video, post.subreddit, part=part_num
+    )
 
     print(f"\n[pipeline] ✓ Video ready: {final_video}")
     print(f"[pipeline] ✓ Published to: {published_video}\n")
@@ -409,10 +451,10 @@ def run_batch(
             for future in as_completed(futures):
                 post = futures[future]
                 try:
-                    video_path = future.result()
+                    video_paths = future.result()
                     completed += 1
-                    if video_path:
-                        produced.append(video_path)
+                    if video_paths:
+                        produced.extend(video_paths)
                         print(f"[pipeline] [{completed}/{len(posts_to_process)}] ✓ {post.post_id}")
                     else:
                         print(f"[pipeline] [{completed}/{len(posts_to_process)}] ⊘ {post.post_id} (skipped)")
@@ -431,14 +473,14 @@ def run_batch(
         
         for idx, post in enumerate(posts_to_process, 1):
             try:
-                video_path = process_post(
+                video_paths = process_post(
                     post,
                     gameplay_clips=gameplay_clips,
                     safety_filter=False,
                     blocked_terms=terms,
                 )
-                if video_path:
-                    produced.append(video_path)
+                if video_paths:
+                    produced.extend(video_paths)
             except Exception as exc:
                 msg = f"Post {post.post_id} failed: {exc}"
                 print(f"[pipeline] ERROR: {msg}")
@@ -522,7 +564,7 @@ def run_multi_subreddit_batch(
                 subreddit=sub,
                 sort=sort,
                 top_time=top_time,
-                min_upvotes=cfg.MIN_UPVOTES,
+                min_upvotes=cfg.get_min_upvotes(sub),
                 min_body_chars=cfg.MIN_BODY_CHARS,
                 max_body_chars=cfg.MAX_BODY_CHARS,
                 auto_download_gameplay=False,  # already loaded

@@ -295,7 +295,7 @@ def main() -> int:
                     blocked_terms=blocked_terms,
                 )
                 if result:
-                    produced += 1
+                    produced += len(result)
             except Exception as exc:
                 print(f"[cli] Failed {post.post_id}: {exc}")
 

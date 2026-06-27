@@ -105,11 +105,19 @@ def get_subreddit_category(subreddit: str) -> str:
     entry = _find_config(subreddit) or {}
     return entry.get("category", "General")
 
+
+def get_max_video_duration(subreddit: str) -> int:
+    """Return the max video duration for *subreddit*, falling back to global."""
+    entry = _find_config(subreddit)
+    if entry is not None and "max_video_duration_s" in entry:
+        return entry["max_video_duration_s"]
+    return MAX_VIDEO_DURATION_S
+
 # Only include posts that are popular, resolved, and substantial enough to narrate
 POST_LIMIT_FETCH = 75          # How many hot/top posts to pull before filtering
 MIN_UPVOTES = 1_000            # Minimum score (lowered for server)
 MIN_BODY_CHARS = 450           # Too short = boring short
-MAX_BODY_CHARS = 1_800         # Server is more permissive for pipeline automation
+MAX_BODY_CHARS = 3_000         # Server is more permissive; pipeline has MAX_VIDEO_DURATION_S safety net
 
 # Only process posts with one of these resolved flairs (None = no filter)
 # Kept for backward-compat; prefer SUBREDDIT_CONFIGS[subreddit]["flair_whitelist"].
@@ -124,8 +132,10 @@ FLAIR_WHITELIST = [
 TOP_COMMENTS_COUNT = 3
 MAX_COMMENT_CHARS = 220        # Trim comments longer than this
 
-# Maximum video length constraint (TikTok/Shorts practical limit)
-MAX_VIDEO_DURATION_S = 300     # 5 minutes limit (server, CPU generation may take longer)
+# Maximum video length constraint (Instagram via Postiz API enforces 300 s).
+# Posts exceeding this are split into Part 1 / Part 2 automatically.
+MAX_VIDEO_DURATION_S = 300
+ENABLE_VIDEO_SPLITTING = True   # When True, long posts get Part 1 / Part 2
 
 # ── Platform safety filters ───────────────────────────────────────────────
 # Posts containing these terms are skipped before TTS/video generation.

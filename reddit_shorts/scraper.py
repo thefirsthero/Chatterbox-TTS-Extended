@@ -625,6 +625,270 @@ def _scrape_posts_public_rss(
     return posts
 
 
+# ── Selenium scraping (browser automation) ─────────────────────────────────
+# Uses a real Chrome browser to bypass anti-bot measures that may block
+# plain requests.  Falls back to old.reddit.com server-rendered HTML which
+# is trivial to parse with BeautifulSoup.
+
+def _selenium_get_driver():
+    """Create a headless Chrome driver configured to evade bot detection.
+
+    Tries undetected-chromedriver first (best evasion), falls back to
+    regular selenium + webdriver-manager with version auto-detection.
+    """
+    # -- Try undetected-chromedriver first (much better at avoiding blocks) --
+    try:
+        import undetected_chromedriver as uc
+        options = uc.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+        driver = uc.Chrome(options=options, version_main=None, use_subprocess=True)
+        print("[scraper] Selenium: using undetected-chromedriver")
+        return driver
+    except Exception as exc:
+        print(f"[scraper] undetected-chromedriver unavailable ({exc}), falling back to selenium")
+
+    # -- Fall back to regular selenium + webdriver-manager --
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.execute_script(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    )
+    print("[scraper] Selenium: using selenium + webdriver-manager")
+    return driver
+
+
+def _scrape_posts_selenium(
+    subreddit_name: str,
+    fetch_limit: int,
+    min_upvotes: int,
+    min_body_chars: int,
+    max_body_chars: int,
+    flair_whitelist: list[str] | None,
+    skip_done: bool,
+    sort: str,
+    top_time: str,
+) -> list[RedditPost]:
+    """Scrape a subreddit using Selenium + old.reddit.com HTML.
+
+    Uses a real Chrome browser to fetch pages, then parses the same
+    old.reddit.com HTML structure as the requests-based scraper.
+    The browser provides a genuine TLS fingerprint that is much harder
+    for Reddit to detect or block compared to plain requests.
+    """
+    done = _load_done_posts() if skip_done else set()
+
+    if sort == "top":
+        list_url = (
+            f"https://old.reddit.com/r/{subreddit_name}/top/"
+            f"?t={top_time}&limit={fetch_limit}"
+        )
+    elif sort == "new":
+        list_url = f"https://old.reddit.com/r/{subreddit_name}/new/?limit={fetch_limit}"
+    else:
+        list_url = f"https://old.reddit.com/r/{subreddit_name}/hot/?limit={fetch_limit}"
+
+    driver = None
+    try:
+        driver = _selenium_get_driver()
+        print(f"[scraper] Selenium: loading {list_url}")
+        driver.get(list_url)
+        time.sleep(3)  # Let JS + images settle
+
+        # Scroll to trigger any lazy-loaded content
+        for _ in range(2):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1)
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+    except Exception as exc:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        raise RuntimeError(f"Selenium listing page failed: {exc}")
+
+    things = soup.find_all("div", class_="thing", attrs={"data-type": "link"})
+    print(f"[scraper] Selenium: found {len(things)} thing elements on listing page")
+
+    posts: list[RedditPost] = []
+    skipped_score = 0
+    skipped_domain = 0
+    skipped_done = 0
+    skipped_flair = 0
+
+    for thing in things:
+        pid_raw = thing.get("data-fullname", "")
+        pid = pid_raw.replace("t3_", "") if pid_raw else ""
+        if not pid or pid in done:
+            skipped_done += 1
+            continue
+
+        score = int(thing.get("data-score", 0) or 0)
+        if score < min_upvotes:
+            skipped_score += 1
+            continue
+
+        domain = thing.get("data-domain", "")
+        if domain and not domain.startswith("self."):
+            skipped_domain += 1
+            continue
+
+        title_elem = thing.find("a", class_="title")
+        title = title_elem.text.strip() if title_elem else ""
+        if not title:
+            continue
+
+        author = thing.get("data-author", "[deleted]")
+        found_sub = thing.get("data-subreddit", subreddit_name)
+        num_comments = int(thing.get("data-num-comments", 0) or 0)
+        permalink = thing.get(
+            "data-permalink", f"/r/{found_sub}/comments/{pid}/"
+        )
+
+        # On listing pages bodies are in the expando — but we'll fetch
+        # individual post pages anyway for accuracy (listing expando may
+        # be truncated or missing).
+        body = ""
+        expando = thing.find("div", class_="expando")
+        if expando:
+            md = expando.find("div", class_="md")
+            if md:
+                body = md.get_text("\n", strip=True)
+
+        flair_elem = thing.find("span", class_="linkflairlabel")
+        flair = flair_elem.text.strip() if flair_elem else None
+        if flair_whitelist and not any(
+            allowed.lower() in (flair or "").lower()
+            for allowed in flair_whitelist
+        ):
+            skipped_flair += 1
+            continue
+
+        posts.append(
+            RedditPost(
+                post_id=pid,
+                title=title,
+                body=_clean_body(body),
+                author=author,
+                upvotes=score,
+                num_comments=num_comments,
+                flair=flair,
+                url=f"https://reddit.com{permalink}",
+                subreddit=found_sub,
+                top_comments=[],
+            )
+        )
+
+    print(
+        f"[scraper] Selenium listing filters: "
+        f"skipped_score={skipped_score} skipped_domain={skipped_domain} "
+        f"skipped_done={skipped_done} skipped_flair={skipped_flair} "
+        f"→ {len(posts)} candidate(s)"
+    )
+
+    # Fetch full body + comments for each candidate via individual post pages
+    posts_to_fetch = [p for p in posts if len(p.body) < min_body_chars]
+    if posts_to_fetch:
+        print(
+            f"[scraper] Selenium: fetching full body for "
+            f"{len(posts_to_fetch)} post(s)..."
+        )
+        for fp in posts_to_fetch:
+            try:
+                slug = (
+                    f"https://old.reddit.com/r/{subreddit_name}"
+                    f"/comments/{fp.post_id}/"
+                )
+                driver.get(slug)
+                time.sleep(1.5)
+                post_soup = BeautifulSoup(driver.page_source, "html.parser")
+                thing = post_soup.find(
+                    "div", class_="thing", attrs={"data-type": "link"}
+                )
+                if thing:
+                    entry = thing.find("div", class_="entry")
+                    if entry:
+                        utb = entry.find("div", class_="usertext-body")
+                        if utb:
+                            md = utb.find("div", class_="md")
+                            if md:
+                                fp.body = _clean_body(
+                                    md.get_text("\n", strip=True)
+                                )
+                # Comments
+                top_comments: list[str] = []
+                for cthing in post_soup.find_all(
+                    "div", class_="thing", attrs={"data-type": "comment"}
+                ):
+                    cbody_div = cthing.find("div", class_="md")
+                    if cbody_div is None:
+                        continue
+                    ctext = cbody_div.get_text(" ", strip=True)
+                    if len(ctext) < 20 or len(ctext) > cfg.MAX_COMMENT_CHARS:
+                        continue
+                    clower = ctext.lower()
+                    if any(
+                        kw in clower
+                        for kw in ["[removed]", "[deleted]", "i am a bot"]
+                    ):
+                        continue
+                    top_comments.append(ctext)
+                    if len(top_comments) >= cfg.TOP_COMMENTS_COUNT:
+                        break
+                fp.top_comments = top_comments
+            except Exception as exc:
+                print(
+                    f"[scraper] Selenium: failed body fetch for "
+                    f"{fp.post_id}: {exc}"
+                )
+
+    # Apply body-length filters now that we have full bodies
+    posts = [
+        p
+        for p in posts
+        if len(p.body) >= min_body_chars
+        and (max_body_chars is None or len(p.body) <= max_body_chars)
+    ]
+
+    driver.quit()
+    driver = None
+
+    posts.sort(key=lambda p: p.upvotes, reverse=True)
+    print(
+        f"[scraper] Selenium mode: fetched listing → "
+        f"{len(posts)} passed filters from r/{subreddit_name}"
+    )
+    return posts
+
+
 def save_posts_to_local_cache(
     posts: list[RedditPost],
     output_dir: Path | None = None,
@@ -1164,10 +1428,42 @@ def scrape_posts(
                     sort=sort,
                     top_time=top_time,
                 )
-                _save_scrape_cache(query, posts, source="public-html")
+                if posts:
+                    _save_scrape_cache(query, posts, source="public-html")
+                    return posts
+                # HTML scraper returned 0 posts — try Selenium before giving up
+                print("[scraper] HTML mode returned 0 posts. Trying Selenium mode...")
+                posts = _scrape_posts_selenium(
+                    subreddit_name=subreddit_name,
+                    fetch_limit=fetch_limit,
+                    min_upvotes=min_upvotes,
+                    min_body_chars=min_body_chars,
+                    max_body_chars=max_body_chars,
+                    flair_whitelist=flair_whitelist,
+                    skip_done=skip_done,
+                    sort=sort,
+                    top_time=top_time,
+                )
+                _save_scrape_cache(query, posts, source="selenium")
                 return posts
             except Exception as html_exc:
-                print(f"[scraper] HTML mode failed ({html_exc}). Falling back to RSS mode.")
+                print(f"[scraper] HTML mode failed ({html_exc}). Trying Selenium mode...")
+                try:
+                    posts = _scrape_posts_selenium(
+                        subreddit_name=subreddit_name,
+                        fetch_limit=fetch_limit,
+                        min_upvotes=min_upvotes,
+                        min_body_chars=min_body_chars,
+                        max_body_chars=max_body_chars,
+                        flair_whitelist=flair_whitelist,
+                        skip_done=skip_done,
+                        sort=sort,
+                        top_time=top_time,
+                    )
+                    _save_scrape_cache(query, posts, source="selenium")
+                    return posts
+                except Exception as selenium_exc:
+                    print(f"[scraper] Selenium mode failed ({selenium_exc}). Falling back to RSS mode.")
                 try:
                     posts = _scrape_posts_public_rss(
                         subreddit_name=subreddit_name,
