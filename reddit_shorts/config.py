@@ -117,7 +117,7 @@ def get_max_video_duration(subreddit: str) -> int:
 POST_LIMIT_FETCH = 75          # How many hot/top posts to pull before filtering
 MIN_UPVOTES = 1_000            # Minimum score (lowered for server)
 MIN_BODY_CHARS = 450           # Too short = boring short
-MAX_BODY_CHARS = 3_000         # Server is more permissive; pipeline has MAX_VIDEO_DURATION_S safety net
+MAX_BODY_CHARS = 4_500         # Server is more permissive; pipeline has MAX_VIDEO_DURATION_S safety net + Part 1/Part 2 splitting
 
 # Only process posts with one of these resolved flairs (None = no filter)
 # Kept for backward-compat; prefer SUBREDDIT_CONFIGS[subreddit]["flair_whitelist"].
